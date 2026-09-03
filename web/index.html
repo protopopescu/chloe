@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="CHLOE — a natural-language AI project started in 2000, learning concepts through dialogue.">
+<meta name="author" content="Dan Protopopescu, Akktia Ltd.">
+<title>CHLOE AI</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="chloe.css">
+</head>
+<body>
+
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a href="#top" class="brand">CHLOE</a>
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+    <nav class="site-nav" id="siteNav">
+      <a href="#about">About</a>
+      <a href="#chat">Chat</a>
+      <a href="#timeline">History</a>
+      <a href="mailto:chloe.ai@akktia.com">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="hero wrap">
+    <p class="eyebrow">est. 2000 &mdash; still learning</p>
+    <h1 class="hero-title">CHLOE</h1>
+    <p class="hero-sub">A natural-language AI that learns concepts, makes associations,
+      and produces new ideas &mdash; from conversation, not just data.</p>
+    <div class="hero-actions">
+      <a href="#chat" class="btn btn-primary">Talk to CHLOE</a>
+      <a href="#about" class="btn btn-ghost">About the project</a>
+    </div>
+  </section>
+
+  <section id="about" class="section wrap">
+    <h2 class="section-title">About</h2>
+    <div class="about-grid">
+      <div class="about-copy">
+        <p>We believe that an AI in its true sense (nowadays referred to as AGI) should manipulate
+          <em>concepts</em>, and complement human reasoning. Image and voice recognition, driving a
+          vehicle, or playing board games &mdash; the domain of &ldquo;narrow&rdquo; AI or machine
+          learning &mdash; should be considered <em>skills</em> that can be added to an AI. An AI also
+          doesn&rsquo;t need to imitate the human brain; it can supplement it in unprecedented ways.</p>
+        <p>CHLOE is a project started in 2000 that tries to implement a natural-language AI capable of
+          learning concepts, making associations, and producing new ideas. Natural language is a proven
+          vehicle for manipulating concepts, so CHLOE learns from chatting with people and, eventually,
+          from searching the web.</p>
+      </div>
+      <div class="acronym-card" role="img" aria-label="CHLOE stands for Computer-Human Language-Oriented Experiment">
+        <div class="acronym-row"><span class="letter">C</span>omputer</div>
+        <div class="acronym-row"><span class="letter">H</span>uman</div>
+        <div class="acronym-row"><span class="letter">L</span>anguage-</div>
+        <div class="acronym-row"><span class="letter">O</span>riented</div>
+        <div class="acronym-row"><span class="letter">E</span>xperiment</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="chat" class="section wrap">
+    <h2 class="section-title">Chat</h2>
+    <p class="section-lead">Talk to CHLOE below. It remembers what you tell it, weighs how much it
+      trusts you on a given topic, and asks about things it's unsure of.</p>
+
+    <div class="chat-window">
+      <div class="chat-window-head">
+        <div class="chat-dots"><span></span><span></span><span></span></div>
+        <span class="chat-window-title">CHLOE</span>
+        <span class="chat-who" id="chatWho" hidden>chatting as <strong id="chatWhoName"></strong> &middot; <button type="button" id="switchPerson" class="chat-who-link">not you?</button></span>
+        <span class="status-pill" id="statusPill">connecting&hellip;</span>
+      </div>
+      <div class="chat-log" id="chatLog">
+        <div class="msg msg-bot">Hi, I&rsquo;m CHLOE. Tell me something, or ask me what I know.</div>
+      </div>
+      <form class="chat-input-row" id="chatForm">
+        <input type="text" id="chatInput" placeholder="Say something to CHLOE&hellip;" autocomplete="off">
+        <button type="submit" class="btn btn-primary btn-small" id="chatSubmit">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="timeline" class="section wrap">
+    <h2 class="section-title">History</h2>
+    <ol class="timeline">
+      <li><span class="tl-year">2000</span><span class="tl-text">CHLOE begins as a C++ experiment in word association, dialogue, and trust-weighted learning.</span></li>
+      <li><span class="tl-year">2012&ndash;2019</span><span class="tl-text">Website goes up under Akktia Ltd.</span></li>
+      <li><span class="tl-year">2026</span><span class="tl-text">The project gets a working prototype (Python, SQLite-backed knowledge store), a refreshed site, and a live chat instance backed by a hosted language model.</span></li>
+    </ol>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>CHLOE is a project of <a href="https://akktia.com">Akktia Ltd.</a> &copy; 2012&ndash;2026</p>
+    <a href="mailto:chloe.ai@akktia.com">chloe.ai@akktia.com</a>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

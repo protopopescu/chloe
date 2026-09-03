@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "CHLOE"
+abstract: "CHLOE (Computer-Human Language Oriented Experiment) is a persistent cognitive architecture for continually learning conversational agents: a symbolic epistemic core (beliefs with provenance, scope, per-domain trust and confidence) with replaceable LLM seams for linguistic input and output, and an offline consolidation (\"sleep\") cycle."
+authors:
+  - family-names: Protopopescu
+    given-names: Dan
+repository-code: "https://github.com/protopopescu/chloe"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "CHLOE: A Persistent Cognitive Architecture for Continually Learning Conversational Agents"
+  authors:
+    - family-names: Protopopescu
+      given-names: Dan
+  year: 2026
+  notes: "arXiv identifier to be added on publication."
