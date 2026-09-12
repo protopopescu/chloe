@@ -219,8 +219,20 @@ class ChloeEngine:
     def _say_atom(self, atom: Atom) -> str:
         return self._say(atom.subject, atom.relation, atom.object, atom.scope)
 
-    def _ask_what(self, subject: str) -> str:
-        return grammar.wh_clause(subject, self.person.name if self.person else "")
+    def _ask_wh(self, subject: str, wh: str = "what") -> str:
+        return grammar.wh_clause(subject, self.person.name if self.person else "", wh)
+
+    def _is_speaker(self, subject: str) -> bool:
+        return bool(self.person) and grammar.same_referent(subject, self.person.name)
+
+    def _vacuous_reply(self, utt: Utterance) -> str:
+        """Subject and object turned out to denote the same thing, so the
+        statement carries no information and is not stored. Pronoun
+        resolution makes this common: "I am Dan", said by Dan, resolves to
+        "Dan is Dan"."""
+        if self._is_speaker(utt.subject) and grammar.is_pronoun(utt.raw.strip().split()[0]):
+            return f"Yes -- I have you as {self.person.name}. Tell me something about yourself?"
+        return f"Everything is itself, so that tells me nothing about {utt.subject}."
 
     # -------------------------------------------------------------- routing
     def _handle_command(self, utt: Utterance) -> str:
@@ -251,6 +263,8 @@ class ChloeEngine:
         return "Okay."
 
     def _handle_statement(self, utt: Utterance) -> str:
+        if grammar.same_referent(utt.subject, utt.obj):
+            return self._vacuous_reply(utt)
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is None:
             atom = Atom(id=None, subject=utt.subject, relation=utt.relation, object=utt.obj, scope=utt.scope,
@@ -283,6 +297,8 @@ class ChloeEngine:
                 f"I'll flag it and ask around.")
 
     def _handle_negation(self, utt: Utterance) -> str:
+        if grammar.same_referent(utt.subject, utt.obj):
+            return f"Nothing can fail to be itself, so I won't record that about {utt.subject}."
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is not None and atom.object.strip().lower() == utt.obj.strip().lower():
             # this person denies an existing positive belief
@@ -306,9 +322,12 @@ class ChloeEngine:
         return f"Okay, I'll remember that {self._say_atom(atom)}."
 
     def _handle_yn_question(self, utt: Utterance) -> str:
+        if grammar.same_referent(utt.subject, utt.obj):
+            return "Yes -- necessarily."
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is None:
-            return f"I don't know. {grammar.capitalise(self._ask_what(utt.subject))}?"
+            wh = utt.extra.get("wh", "what")
+            return f"I don't know. {grammar.capitalise(self._ask_wh(utt.subject, wh))}?"
         matches = atom.object.strip().lower() == utt.obj.strip().lower()
         if matches:
             return f"Yes, as far as I know ({atom.status.value}, confidence {atom.confidence:.2f})."
@@ -316,12 +335,22 @@ class ChloeEngine:
                 f"(confidence {atom.confidence:.2f}).")
 
     def _handle_wh_question(self, utt: Utterance) -> str:
+        wh = utt.extra.get("wh", "what")
         candidates = [a for a in self.store.all_atoms() if a.subject.strip().lower() == utt.subject.strip().lower()]
         if not candidates:
             # The queued question keeps the resolved name: it may be asked
             # of someone else later, for whom "you" would mean someone else.
             self.store.queue_question(f"What is {utt.subject}?", reason="unknown_term")
-            return f"I don't know yet -- {self._ask_what(utt.subject)}?"
+            # A name is not a belief and is held on the Person, not as an
+            # atom -- but answering a flat "I don't know" immediately after
+            # greeting someone by that name reads as a contradiction.
+            if self._is_speaker(utt.subject):
+                known = f"Only that you're {self.person.name}"
+            elif grammar.same_referent(utt.subject, grammar.CHLOE_NAME):
+                known = f"Only that I'm {grammar.CHLOE_NAME}"
+            else:
+                known = "I don't know yet"
+            return f"{known} -- {self._ask_wh(utt.subject, wh)}?"
         best = max(candidates, key=lambda a: a.confidence)
         clause = self._say(best.subject, best.relation, best.object)
         return f"{grammar.capitalise(clause)} (confidence {best.confidence:.2f})."

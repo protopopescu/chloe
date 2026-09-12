@@ -92,14 +92,17 @@ def parse(text: str) -> Utterance:
 
     is_question = raw.strip().endswith("?")
 
-    # wh- question: "what is X", "who is X", "what does X mean"
-    m = re.match(r"^(what|who)\s+(is|are|am|means)\s+(.+)$", low)
+    # wh- question: "what is X", "who is X", "what does X mean".
+    # Matched against the original-case text so the subject is echoed back
+    # as the person wrote it ("who is Felix?", not "who is felix?").
+    m = re.match(r"^(what|who)\s+(is|are|am|means)\s+(.+)$", t, re.IGNORECASE)
     if m and is_question:
         subject = _strip_punct(m.group(3))
-        return Utterance(raw=raw, type=UtteranceType.WH_QUESTION, subject=subject, relation="is")
+        return Utterance(raw=raw, type=UtteranceType.WH_QUESTION, subject=subject,
+                         relation="is", extra={"wh": m.group(1).lower()})
 
     # yes/no question: "is X Y", "are X Y", optionally with a "when/if" scope clause
-    m = re.match(r"^(is|are|was|were)\s+(.+)$", low)
+    m = re.match(r"^(is|are|am|was|were)\s+(.+)$", t, re.IGNORECASE)
     if m and is_question:
         rest, scope = _split_scope(m.group(2))
         # Naive split, object-last: "the sky blue" -> "the sky" / "blue".
@@ -107,10 +110,11 @@ def parse(text: str) -> Utterance:
         # object, not the subject: "Felix a cat" -> "Felix" / "a cat".
         tokens = rest.split()
         if len(tokens) >= 2:
-            cut = -2 if len(tokens) >= 3 and tokens[-2] in _DETERMINERS else -1
+            cut = -2 if len(tokens) >= 3 and tokens[-2].lower() in _DETERMINERS else -1
             subject = " ".join(tokens[:cut])
             obj = " ".join(tokens[cut:])
-            return Utterance(raw=raw, type=UtteranceType.YN_QUESTION, subject=subject, relation=m.group(1), obj=obj, scope=scope)
+            return Utterance(raw=raw, type=UtteranceType.YN_QUESTION, subject=subject,
+                             relation=m.group(1).lower(), obj=obj, scope=scope)
         return Utterance(raw=raw, type=UtteranceType.UNKNOWN)
 
     # Any other question ("what colour is the sky?") fits neither template

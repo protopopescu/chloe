@@ -1,7 +1,8 @@
 """
 Tests for grammar.py: pronoun resolution inbound, pronoun swapping and
-copula agreement outbound, and the fact that what lands in the store is
-third-person and person-neutral.
+copula agreement outbound, the fact that what lands in the store is
+third-person and person-neutral, and that statements which resolve to a
+tautology are refused rather than stored.
 
 Runs offline against the pattern parser. Stdlib only:
 
@@ -36,6 +37,11 @@ class GrammarUnitTests(unittest.TestCase):
         self.assertEqual(grammar.swap_pronoun("Dan", "Alice"), "Dan")
         self.assertEqual(grammar.swap_pronoun("Felix", "Dan"), "Felix")
 
+    def test_same_referent(self):
+        self.assertTrue(grammar.same_referent("Dan", "dan"))
+        self.assertFalse(grammar.same_referent("Dan", "Alice"))
+        self.assertFalse(grammar.same_referent("Dan", ""))
+
     def test_accord_verb(self):
         self.assertEqual(grammar.accord_verb("is", "you"), "are")
         self.assertEqual(grammar.accord_verb("is", "I"), "am")
@@ -56,6 +62,14 @@ class GrammarUnitTests(unittest.TestCase):
         self.assertEqual(grammar.wh_clause("Chloe", "Dan"), "what am I")
         self.assertEqual(grammar.wh_clause("Dan", "Dan"), "what are you")
         self.assertEqual(grammar.wh_clause("Felix", "Dan"), "what is Felix")
+
+    def test_wh_clause_keeps_the_askers_wh_word(self):
+        self.assertEqual(grammar.wh_clause("Dan", "Dan", "who"), "who are you")
+        self.assertEqual(grammar.wh_clause("Chloe", "Dan", "who"), "who am I")
+
+    def test_parser_reports_the_wh_word(self):
+        self.assertEqual(parse("who is Felix?").extra.get("wh"), "who")
+        self.assertEqual(parse("what is Felix?").extra.get("wh"), "what")
 
     def test_pronoun_subject_stores_third_person_copula(self):
         utt = grammar.resolve_referents(parse("I am a person"), "Dan")
@@ -96,7 +110,19 @@ class DialoguePronounTests(unittest.TestCase):
 
     def test_unknown_subject_question_still_agrees(self):
         dan = self._engine("Dan")
-        self.assertEqual(dan.turn("what are you?"), "I don't know yet -- what am I?")
+        self.assertEqual(dan.turn("what are you?"), "Only that I'm Chloe -- what am I?")
+
+    def test_a_who_question_is_answered_as_a_who_question(self):
+        dan = self._engine("Dan")
+        self.assertEqual(dan.turn("who am I?"), "Only that you're Dan -- who are you?")
+        self.assertEqual(dan.turn("who is Felix?"), "I don't know yet -- who is Felix?")
+        self.assertEqual(dan.turn("what is Felix?"), "I don't know yet -- what is Felix?")
+
+    def test_a_name_is_not_reported_as_total_ignorance(self):
+        # greet() binds the name on the Person, not as an atom, but answering
+        # a flat "I don't know" right after using it reads as a contradiction.
+        dan = self._engine("Dan")
+        self.assertTrue(dan.turn("who am I?").startswith("Only that you're Dan"))
 
     def test_possessive_in_object(self):
         dan = self._engine("Dan")
@@ -114,13 +140,38 @@ class DialoguePronounTests(unittest.TestCase):
         self._engine("Dan").turn("I am a person")
         alice = self._engine("Alice")
         self.assertTrue(alice.turn("what is Dan?").startswith("Dan is a person"))
-        self.assertEqual(alice.turn("who am I?"), "I don't know yet -- what are you?")
+        self.assertEqual(alice.turn("who am I?"), "Only that you're Alice -- who are you?")
+
+    def test_self_identification_is_not_stored_as_a_belief(self):
+        # Pronoun resolution turns "I am Dan", said by Dan, into "Dan is Dan".
+        dan = self._engine("Dan")
+        self.assertIn("I have you as Dan", dan.turn("I am Dan"))
+        self.assertIn("I have you as Dan", dan.turn("I am me"))
+        self.assertEqual(self.store.all_atoms(), [])
+
+    def test_tautology_is_refused(self):
+        dan = self._engine("Dan")
+        self.assertIn("tells me nothing about Felix", dan.turn("Felix is Felix"))
+        self.assertIn("fail to be itself", dan.turn("Felix is not Felix"))
+        self.assertEqual(dan.turn("am I me?"), "Yes -- necessarily.")
+        self.assertEqual(self.store.all_atoms(), [])
+
+    def test_real_beliefs_still_stored_after_the_guards(self):
+        dan = self._engine("Dan")
+        dan.turn("I am a physicist")
+        self.assertEqual([a.statement() for a in self.store.all_atoms()], ["Dan is a physicist"])
+        self.assertTrue(dan.turn("who am I?").startswith("You are a physicist"))
 
     def test_queued_question_keeps_the_real_name(self):
         dan = self._engine("Dan")
         dan.turn("who am I?")
         self.assertEqual([q["question"] for q in self.store.pending_questions()],
                          ["What is Dan?"])
+
+    def test_another_persons_name_is_not_a_tautology(self):
+        dan = self._engine("Dan")
+        self.assertIn("Alice", dan.turn("Felix is Alice"))
+        self.assertEqual([a.statement() for a in self.store.all_atoms()], ["Felix is Alice"])
 
 
 if __name__ == "__main__":

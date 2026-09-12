@@ -240,7 +240,12 @@ def parse(text: str) -> Utterance:
         return utt
 
     try:
-        return _to_utterance(text, _ask_llm(text))
+        utt = _to_utterance(text, _ask_llm(text))
+        if utt.type == UtteranceType.WH_QUESTION:
+            # Not part of the JSON contract: taken from the input so a reply
+            # can echo the wh-word the person actually used.
+            utt.extra["wh"] = "who" if low.startswith("who") else "what"
+        return utt
     except (llm_client.LLMUnavailable, BadParse) as e:
         utt = nlu.parse(text)
         utt.extra.setdefault("parser", "patterns")

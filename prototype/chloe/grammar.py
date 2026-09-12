@@ -125,6 +125,13 @@ def swap_pronouns_in(text: str, speaker: str) -> str:
     return _WORD_RE.sub(lambda m: names.get(m.group(0).lower(), m.group(0)), text)
 
 
+def same_referent(a: str, b: str) -> bool:
+    """Whether two resolved phrases denote the same thing. Used to catch
+    statements that say nothing: "I am me" and "I am Dan" both resolve to
+    "Dan is Dan"."""
+    return bool(a) and bool(b) and a.strip().lower() == b.strip().lower()
+
+
 def accord_verb(verb: str, pronoun: str) -> str:
     """cGrammar.hh AccordTheVerb(): agree a copula with the pronoun in front
     of it. Anything that is not a first/second-person pronoun keeps the verb
@@ -148,8 +155,8 @@ def clause(subject: str, relation: str, obj: str, scope: str = "", speaker: str 
 
 
 def wh_clause(subject: str, speaker: str = "", wh: str = "what") -> str:
-    """Render a "what is X" question with X in the right person: "what are
-    you", "what am I", "what is Felix"."""
+    """Render a wh-question with X in the right person, keeping the
+    wh-word the asker used: "who are you", "what am I", "what is Felix"."""
     subj = swap_pronoun(subject, speaker)
     return f"{wh} {accord_verb('is', subj)} {subj}"
 
