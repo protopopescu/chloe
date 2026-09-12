@@ -1,10 +1,10 @@
 # CHLOE
 
-**Computer-Human Language Oriented Experiment** — a persistent cognitive
-architecture for continually learning conversational agents.
+**Computer-Human Language Oriented Experiment** — a persistent epistemic
+architecture for inspectable AI.
 
 CHLOE treats a large language model as a *faculty* of an agent, not the
-agent itself. The LLM handles language at two replaceable seams (reading
+agent itself. The LLM handles language at two replaceable interfaces (reading
 free text into structured utterances, and phrasing decided replies
 naturally), while a persistent symbolic core remains the authority on what
 the agent believes: every belief is an inspectable atom with explicit
@@ -20,8 +20,7 @@ the design; the original C++ implementation is preserved here as
 provenance. The architecture was revived and implemented in 2026, once
 LLMs had solved the language problem the original attempt foundered on.
 
-This repository accompanies the paper *CHLOE: A Persistent Cognitive
-Architecture for Continually Learning Conversational Agents*
+This repository accompanies the paper *CHLOE: A Persistent Epistemic Architecture for Inspectable AI*
 (D. Protopopescu, 2026 — arXiv link to follow).
 
 ## Layout
@@ -29,8 +28,8 @@ Architecture for Continually Learning Conversational Agents*
 ```
 prototype/       the 2026 implementation: pure-stdlib Python, SQLite-backed.
                  Runs fully offline; optionally attaches an OpenAI-compatible
-                 LLM endpoint at both linguistic seams. Includes a scripted
-                 demo and an offline test suite for the LLM parser.
+                 LLM endpoint at both linguistic interfaces. Includes a scripted
+                 demo and two offline test suites.
 web/             a deployable web chat front end for the same engine, with
                  visitor identity binding and a scheduled nightly "dreaming"
                  window. Stdlib-only server.
@@ -47,11 +46,13 @@ No dependencies beyond Python 3 — nothing to install:
 
 ```
 cd prototype
-python3 demo.py      # scripted end-to-end walkthrough
-python3 -m chloe     # interactive session
+python3 demo.py             # scripted end-to-end walkthrough
+python3 -m chloe            # interactive session
+python3 test_llm_parser.py  # offline, starts its own mock LLM server
+python3 test_pronouns.py    # offline
 ```
 
-To attach a language model at the linguistic seams, or to run the web
+To attach a language model at the linguistic interfaces, or to run the web
 front end, see `prototype/README.md` and `web/README.md`.
 
 ## Licence

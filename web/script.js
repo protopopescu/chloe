@@ -14,14 +14,11 @@ siteNav.querySelectorAll('a').forEach(link => {
   });
 });
 
-// Chat — talks to this same server's /api/greet and /api/chat endpoints
-// (see chloe-server.py). /api/greet is the friendly first-contact step: it turns
-// the visitor's real typed name into a genuine ChloeEngine.greet() call,
-// which (per the secret-word identity feature in chloe/dialogue.py) may
-// itself ask to set up a secret word, or ask a returning name to confirm
-// theirs before their message history is handed back to them. /api/chat
-// handles every message after that, and if a vLLM server is configured,
-// asks it to phrase the reply naturally.
+// Chat — talks to this server's /api/greet and /api/chat (chloe-server.py).
+// /api/greet turns the name the visitor typed into a ChloeEngine.greet()
+// call, which may ask to set up a secret word, or ask a returning name to
+// confirm theirs before their history is handed back. /api/chat handles
+// every message after that.
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const chatLog = document.getElementById('chatLog');
@@ -56,9 +53,8 @@ function addMessage(text, from) {
   return div;
 }
 
-// Whether the site is currently in a dreaming (chat-paused) window -- see
-// chloe-server.py's DREAM_INTERVAL_MINUTES. Tracked so we only announce the
-// start/end of a dream once, not on every poll while it's ongoing.
+// Whether the site is in a dreaming (chat-paused) window. Tracked so the
+// start and end of a dream are announced once, not on every poll.
 let wasDreaming = false;
 
 function setDreaming(dreaming, summary) {
@@ -170,9 +166,9 @@ chatForm.addEventListener('submit', async (e) => {
 });
 
 switchPersonBtn.addEventListener('click', () => {
-  // A fresh identity needs a fresh session_id too -- otherwise /api/greet
-  // would just find the previous person's already-created engine for this
-  // session_id and skip straight to "Welcome back" for the wrong name.
+  // A fresh identity needs a fresh session_id: otherwise /api/greet finds
+  // the previous person's engine for this session_id and goes straight to
+  // "Welcome back" under the wrong name.
   localStorage.removeItem(NAME_KEY);
   localStorage.removeItem(SESSION_KEY);
   chatLog.innerHTML = '';
@@ -188,13 +184,11 @@ async function initChat() {
     enterNameMode();
     return;
   }
-  // Name already known for this browser (returning visit). Still call
-  // /api/greet -- it's the only thing that either (a) creates the engine
-  // for the first time this session_id has been seen server-side (e.g.
-  // after a server restart, or on a device that already has the name
-  // saved but never actually greeted), which can surface a secret-word
-  // prompt, or (b) is a no-op "welcome back" if this session already
-  // greeted. Either way the reply is safe to just show.
+  // Name already known for this browser. /api/greet is still called: it
+  // either creates the engine for a session_id the server has not seen
+  // (after a restart, or on a device holding a saved name that never
+  // greeted), which can surface a secret-word prompt, or returns a "welcome
+  // back" no-op. Either reply is safe to show.
   enterChatMode(storedName);
   const thinking = addMessage('…', 'bot');
   try {

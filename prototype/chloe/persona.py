@@ -1,14 +1,13 @@
 """
-System-prompt construction for the LLM naturalization layer (see
-llm_client.py). Keeps CHLOE's self-description and conversational stance in
-one place so the webapp doesn't need to hardcode prompt text.
+System-prompt construction for the LLM naturalisation layer (see
+llm_client.py). CHLOE's self-description and conversational stance live
+here rather than being hardcoded in the web server.
 
-Design: the symbolic engine (dialogue.ChloeEngine) decides *what happened*
-(a fact was learned, corroborated, or contradicted; a question is pending;
-a trust score changed) and produces a short factual reply. This module's
-prompt asks the LLM only to *phrase* that factual reply naturally -- it is
-explicitly told not to invent facts of its own, keeping the symbolic core
-as the authority per the design's epistemic-transparency principle.
+The symbolic engine (dialogue.ChloeEngine) decides what happened -- a fact
+learned, corroborated or contradicted, a question pending, a trust score
+changed -- and produces a short factual reply. This prompt asks the model
+only to phrase that reply, and tells it not to add facts of its own: the
+symbolic core stays the authority.
 """
 
 CHLOE_DESCRIPTION = (
@@ -32,9 +31,9 @@ def system_prompt() -> str:
     return f"{CHLOE_DESCRIPTION}\n\n{STYLE_GUIDE}"
 
 
-def naturalize_request(user_message: str, ground_truth_reply: str) -> list:
-    """Build the messages list for asking the LLM to naturalize a factual
-    reply already produced by the symbolic engine."""
+def naturalise_request(user_message: str, ground_truth_reply: str) -> list:
+    """Build the messages list for asking the model to naturalise a
+    factual reply already produced by the symbolic engine."""
     return [
         {"role": "system", "content": system_prompt()},
         {

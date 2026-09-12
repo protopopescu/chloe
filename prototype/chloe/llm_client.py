@@ -1,21 +1,16 @@
 """
 Minimal client for an OpenAI-compatible chat-completions endpoint (vLLM).
 
-This is CHLOE's seam for the "LLM as linguistic layer, symbolic core as
-authority" idea from the original design and the README's file-layout table:
-nlu.parse() turns human text into an Utterance for the symbolic engine, and
-this module is the mirror-image piece for the *output* side -- turning the
-engine's factual reply into something that reads like natural conversation.
+The output-side linguistic interface: the engine decides the facts, this
+turns its factual reply into something that reads like conversation.
+llm_nlu.py is the mirror image on the input side.
 
-Deliberately stdlib-only (urllib). Configuration is via environment
-variables, e.g.:
+Stdlib only (urllib). Configured entirely through environment
+variables; with VLLM_BASE_URL unset it makes no requests at all.
 
     export VLLM_BASE_URL=http://<your-llm-host>:8000/v1
     export VLLM_API_KEY=...          # only if the server requires one
     export VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct   # optional, has a default
-
-This only ever speaks HTTP to whatever OpenAI-compatible server
-VLLM_BASE_URL points at; with the variable unset it makes no requests.
 """
 
 import json
@@ -29,9 +24,8 @@ DEFAULT_TIMEOUT = float(os.getenv("VLLM_TIMEOUT", "30"))
 
 
 class LLMUnavailable(Exception):
-    """Raised when the vLLM server isn't configured or couldn't be reached.
-    Callers should catch this and fall back to the symbolic engine's own
-    reply rather than let a chat request fail outright."""
+    """The server is not configured or could not be reached. Callers fall
+    back to the symbolic engine's own reply rather than fail the turn."""
 
 
 def is_configured() -> bool:

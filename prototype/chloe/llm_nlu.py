@@ -1,12 +1,11 @@
 """
-LLM-based input parser -- the realisation of the input-side seam.
+LLM-based input parser, behind nlu.py's `parse(text) -> Utterance`
+interface.
 
-nlu.py's module docstring has promised since the start that
-`parse(text) -> Utterance` is "the seam where a real LLM-based parser could
-be swapped in later". This module is that swap, symmetric to the
-output-side naturalisation layer (llm_client.py + persona.py): the same
-vLLM-served model that phrases CHLOE's replies now also reads the human's
-input into a structured Utterance for the symbolic engine.
+Symmetric to the output-side naturalisation layer (llm_client.py +
+persona.py): the same vLLM-served model that phrases CHLOE's replies also
+reads the human's input into a structured Utterance for the symbolic
+engine.
 
 Routing (LLM-first, pattern fallback):
 
@@ -21,24 +20,21 @@ Routing (LLM-first, pattern fallback):
      declared UtteranceTypes and its reply is strictly validated: unknown
      type, missing fields, or a malformed shape are never patched up.
   4. A *valid* LLM refusal (type "unknown", or confidence below
-     CHLOE_PARSE_MIN_CONFIDENCE) is final -- it is NOT retried against the
+     CHLOE_PARSE_MIN_CONFIDENCE) is final and is NOT retried against the
      pattern parser. Refuse-rather-than-guess would mean nothing if a
-     refusal just fell through to a sloppier parser: a fabricated parse
-     would be indistinguishable from real testimony once stored.
+     refusal fell through to a sloppier parser: once stored, a fabricated
+     parse is indistinguishable from real testimony.
   5. Only a *broken* exchange (server unreachable, HTTP error, unparseable
-     or invalid JSON) falls back to the pattern parser, mirroring how the
-     output side falls back to the engine's plain reply.
+     or invalid JSON) falls back to the pattern parser.
 
-Every LLM parse carries its own confidence in Utterance.extra
-["parse_confidence"], which dialogue.py records into Provenance -- kept
-separate from source trust, so "CHLOE misunderstood you" stays
-distinguishable from "your source was wrong". Pattern-parser parses carry
-no parse confidence (None): the patterns are deterministic, and asserting
-a number for them would be invented precision.
+Each LLM parse carries its confidence in Utterance.extra
+["parse_confidence"], which dialogue.py records into Provenance. Pattern
+parses carry None: the patterns are deterministic, and a number for them
+would be invented precision.
 
-Privacy note: when a server is configured, ordinary conversational input
-is sent to it over HTTP. Secret words never reach this module -- the
-engine's AuthState detours consume them before parse() is called.
+Privacy: when a server is configured, ordinary conversational input is
+sent to it over HTTP. Secret words never reach this module -- the engine's
+AuthState detours consume them before parse() is called.
 """
 
 import json
@@ -100,6 +96,9 @@ Rules:
 - NEVER invent a command, an instruction, or a field not listed here.
 - A conditional clause ("when it is daytime", "if it rains") goes in
   "scope" as "it is daytime" / "it rains", not into subject or object.
+- Keep first- and second-person words exactly as the human wrote them
+  ("I", "me", "my", "you", "your"). Who they refer to is resolved after
+  you, by CHLOE, which knows who is speaking. Never substitute a name.
 
 Examples:
 Input: the sky is blue
@@ -116,11 +115,17 @@ Input: Felix is a cat and cats are animals
 {"type": "unknown", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.9, "reason": "multiple_statements"}
 Input: thanks, that's lovely!
 {"type": "unknown", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.9, "reason": "not_parseable"}
+Input: who am I?
+{"type": "wh_question", "subject": "I", "relation": "am", "object": null, "scope": null, "confidence": 0.95, "reason": null}
+Input: I am a physicist
+{"type": "statement", "subject": "I", "relation": "am", "object": "a physicist", "scope": null, "confidence": 0.96, "reason": null}
+Input: what are you?
+{"type": "wh_question", "subject": "you", "relation": "are", "object": null, "scope": null, "confidence": 0.95, "reason": null}
 """
 
 
 class BadParse(Exception):
-    """The LLM's reply was malformed or violated the contract (bad JSON,
+    """The reply was malformed or violated the contract (bad JSON,
     undeclared type, missing fields). Treated like an unreachable server:
     the caller falls back to the pattern parser."""
 
@@ -129,9 +134,8 @@ _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 
 def _extract_json(reply: str) -> dict:
-    """Parse the LLM reply as a single JSON object, tolerating only the
-    most common cosmetic wrapper (code fences). Anything else is BadParse:
-    we validate, we don't repair."""
+    """Parse the reply as a single JSON object, tolerating only code
+    fences. Anything else is BadParse: validate, never repair."""
     cleaned = _JSON_FENCE_RE.sub("", reply.strip())
     try:
         payload = json.loads(cleaned)
@@ -156,10 +160,9 @@ def _refuse(raw: str, confidence, reason: str) -> Utterance:
 
 
 def _to_utterance(raw: str, payload: dict) -> Utterance:
-    """Strictly map a validated-shape payload onto a declared Utterance.
-    Violations of the contract raise BadParse; honest refusals and
-    low-confidence parses become UNKNOWN. Nothing is ever guessed into a
-    belief-bearing type."""
+    """Map a payload onto a declared Utterance. Contract violations raise
+    BadParse; refusals and low-confidence parses become UNKNOWN. Nothing is
+    guessed into a belief-bearing type."""
     type_name = payload.get("type")
     if not isinstance(type_name, str) or type_name.strip().lower() not in _ALLOWED_TYPES:
         # Includes any attempt to emit "command" or an invented type.
@@ -218,10 +221,10 @@ def _ask_llm(text: str) -> dict:
 
 
 def parse(text: str) -> Utterance:
-    """Drop-in replacement for nlu.parse() behind the same seam.
+    """Drop-in replacement for nlu.parse().
 
     Commands first (deterministic, never via the LLM), then the LLM if one
-    is configured, then -- only on a broken exchange -- the pattern parser.
+    is configured, then -- only on a broken exchange -- the patterns.
     """
     stripped = nlu._strip_vocative(text)
     low = nlu._strip_punct(stripped).lower()

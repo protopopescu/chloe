@@ -1,17 +1,14 @@
 """
 Minimal natural-language front end.
 
-The 2000 code hardcoded a handful of English patterns directly into the
-control flow (cGrammar.hh, cData.hh). We do the same thing here, in spirit,
-but a bit more robustly and in one place -- this module's whole job is to
-turn a line of text into a structured Utterance, nothing more. It is
-deliberately NOT an LLM: this keeps the prototype self-contained and
-runnable with no API key or network access. The interface here
-(`parse(text) -> Utterance`) is the seam where a real LLM-based parser
-could be swapped in later, exactly as CHLOE.md's "Possible Modern
-Architecture" describes ("LLM for language understanding" sitting on top
-of the symbolic core). Nothing else in the package needs to change if you
-do that swap.
+Turns a line of text into a structured Utterance, and nothing more. The
+2000 code hardcoded its English patterns into the control flow
+(cGrammar.hh, cData.hh); they live in one place here.
+
+Deliberately not an LLM, so the prototype runs with no API key and no
+network. `parse(text) -> Utterance` is the linguistic input interface:
+llm_nlu.py implements the same signature over a language model, and
+nothing else in the package changes between the two.
 """
 
 import re
@@ -30,17 +27,15 @@ class UtteranceType(str, Enum):
 
 
 _SCOPE_SPLIT = re.compile(r"\bwhen\b|\bif\b", re.IGNORECASE)
-_COPULAS = ("is", "are", "was", "were", "means", "means that")
+_COPULAS = ("is", "are", "am", "was", "were", "means", "means that")
+_DETERMINERS = ("a", "an", "the")
 
-# Direct-address greeting stripped before classification, e.g. "Hi Chloe,"
-# or "Chloe,". The 2000 C++ parser (cGrammar.hh AnalyseSentence) never
-# actually stripped this -- it required tword[1] to be a copula, so
-# "Hi Chloe, ..." simply matched nothing and was silently dropped. Our
-# regex parser is more permissive (it hunts for "is" anywhere in the
-# sentence), so an unstripped vocative gets swallowed into the subject.
-# A bare "chloe" with no greeting word and no following comma/colon is
-# left alone, since that's more likely a real statement about Chloe
-# herself (e.g. "Chloe is a robot") than an address.
+# Direct address stripped before classification, e.g. "Hi Chloe," or
+# "Chloe,". The statement pattern below looks for a copula anywhere in the
+# sentence, so an unstripped vocative is swallowed into the subject.
+# A bare "chloe" with no greeting word and no comma or colon after it is
+# left alone: more likely a statement about Chloe ("Chloe is a robot")
+# than an address.
 _VOCATIVE_RE = re.compile(
     r"^\s*(?:(?:hi|hey|hello|hiya|yo)\b\s*,?\s*chloe\b\s*[,:]?\s*|chloe\b\s*[,:]\s*)",
     re.IGNORECASE,
@@ -98,7 +93,7 @@ def parse(text: str) -> Utterance:
     is_question = raw.strip().endswith("?")
 
     # wh- question: "what is X", "who is X", "what does X mean"
-    m = re.match(r"^(what|who)\s+(is|are|means)\s+(.+)$", low)
+    m = re.match(r"^(what|who)\s+(is|are|am|means)\s+(.+)$", low)
     if m and is_question:
         subject = _strip_punct(m.group(3))
         return Utterance(raw=raw, type=UtteranceType.WH_QUESTION, subject=subject, relation="is")
@@ -107,25 +102,27 @@ def parse(text: str) -> Utterance:
     m = re.match(r"^(is|are|was|were)\s+(.+)$", low)
     if m and is_question:
         rest, scope = _split_scope(m.group(2))
-        # naive split: "the sky blue" -> subject="the sky", object="blue"
+        # Naive split, object-last: "the sky blue" -> "the sky" / "blue".
+        # A determiner immediately before the final word belongs to the
+        # object, not the subject: "Felix a cat" -> "Felix" / "a cat".
         tokens = rest.split()
         if len(tokens) >= 2:
-            subject = " ".join(tokens[:-1])
-            obj = tokens[-1]
+            cut = -2 if len(tokens) >= 3 and tokens[-2] in _DETERMINERS else -1
+            subject = " ".join(tokens[:cut])
+            obj = " ".join(tokens[cut:])
             return Utterance(raw=raw, type=UtteranceType.YN_QUESTION, subject=subject, relation=m.group(1), obj=obj, scope=scope)
         return Utterance(raw=raw, type=UtteranceType.UNKNOWN)
 
-    # Any other question ("what colour is the sky?") doesn't fit the narrow
-    # wh/yn templates above. Previously this fell through to the statement
-    # regex below, which doesn't check is_question and will happily match
-    # the "is" inside the question -- turning a question into a false
-    # remembered belief. Bail out to UNKNOWN instead of guessing.
+    # Any other question ("what colour is the sky?") fits neither template
+    # above. The statement pattern below does not test is_question and
+    # would match the copula inside the question, storing it as a belief,
+    # so refuse rather than guess.
     if is_question:
         return Utterance(raw=raw, type=UtteranceType.UNKNOWN)
 
     # negated statement: "X is not Y"
     body, scope = _split_scope(t)
-    m = re.match(r"^(.+?)\s+(is|are|was|were|means)\s+not\s+(.+)$", body, re.IGNORECASE)
+    m = re.match(r"^(.+?)\s+(is|are|am|was|were|means)\s+not\s+(.+)$", body, re.IGNORECASE)
     if m:
         return Utterance(
             raw=raw, type=UtteranceType.NEGATION,
@@ -134,7 +131,7 @@ def parse(text: str) -> Utterance:
         )
 
     # plain statement: "X is Y"
-    m = re.match(r"^(.+?)\s+(is|are|was|were|means)\s+(.+)$", body, re.IGNORECASE)
+    m = re.match(r"^(.+?)\s+(is|are|am|was|were|means)\s+(.+)$", body, re.IGNORECASE)
     if m:
         return Utterance(
             raw=raw, type=UtteranceType.STATEMENT,

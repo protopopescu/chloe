@@ -1,20 +1,27 @@
 """
 Trust and confidence.
 
-From the design notes, 'Trust Models': trust evolves with internal consistency,
-corroboration, later verification, and historical reliability, and should
-be domain-specific rather than one global score. This module implements a
-simple version of that: each Person carries a trust score per domain
-(models.Person.trust), nudged up on corroboration and down on
-contradiction. Atom confidence is then a trust-weighted vote across all
-the provenance attached to it, not a raw source count -- so one highly
-trusted source can outweigh several unreliable ones, and a single
-contradiction from a trusted source can flip an atom's status.
+Trust is domain-specific rather than one global score: each Person carries
+a score per domain (models.Person.trust), nudged up on corroboration and
+down on contradiction.
+
+Atom confidence is a trust-weighted vote over the provenance attached to
+it, not a source count, so one trusted source can outweigh several
+unreliable ones and a single trusted contradiction can flip an atom's
+status. The vote is damped by the total weight of evidence behind it, so
+confidence approaches its extremes only as trusted evidence accumulates,
+not on unanimity alone.
 """
 
 from .models import Atom, AtomStatus, Person, Provenance
 
 LEARNING_RATE = 0.15
+
+# Weight of the "no evidence yet" prior in the confidence damping term. Larger
+# values need more accumulated trust-weight before a belief can approach 0 or 1.
+# 0.5 -- one neutral-trust source -- keeps the demo's contradicted belief below
+# CONTRADICT_THRESHOLD; at 1.0 it no longer registers as contradicted at all.
+EVIDENCE_PRIOR = 0.5
 CONFIRM_THRESHOLD = 0.75
 CONTRADICT_THRESHOLD = 0.35
 
@@ -30,8 +37,17 @@ def update_trust_on_contradiction(person: Person, domain: str) -> None:
 
 
 def recompute_confidence(atom: Atom, people_by_id: dict) -> float:
-    """Trust-weighted vote: +polarity*trust for corroborating provenance,
-    -polarity*trust for contradicting. Squashed into [0, 1] around 0.5."""
+    """Trust-weighted vote, damped by how much evidence stands behind it.
+
+    Direction comes from the vote: +polarity*trust corroborating,
+    -polarity*trust contradicting, normalised by total weight into [-1, 1].
+    Magnitude is damped by weight_total / (weight_total + EVIDENCE_PRIOR),
+    so the vote decides which way a belief leans and accumulated weight
+    decides how far it can go. 0.5 is the no-information point.
+
+    Undamped, a normalised vote reaches its extremes on unanimity alone,
+    however little the agreeing sources are trusted.
+    """
     if not atom.provenance:
         return atom.confidence
 
@@ -47,7 +63,8 @@ def recompute_confidence(atom: Atom, people_by_id: dict) -> float:
         return 0.5
 
     normalized = score / weight_total  # in [-1, 1]
-    confidence = 0.5 + 0.5 * normalized  # map to [0, 1]
+    damping = weight_total / (weight_total + EVIDENCE_PRIOR)
+    confidence = 0.5 + 0.5 * normalized * damping  # map to [0, 1]
     return max(0.0, min(1.0, confidence))
 
 

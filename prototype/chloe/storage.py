@@ -2,11 +2,11 @@
 SQLite-backed knowledge store.
 
 The 2000 version stored everything in flat per-letter text files
-(dict/*.cw, xref/*.xr) that were rewritten wholesale on every update --
-not scalable, per the original notes' own list of obstacles. SQLite gives us
-durability and queryability while staying a single dependency-free file,
-which is the smallest reasonable upgrade that keeps this a "prototype /
-weekend project", not an infrastructure build-out. Swapping this module
+(dict/*.cw, xref/*.xr) rewritten wholesale on every update, which the
+original notes already listed as a scaling obstacle. SQLite gives
+durability and queryability while staying a single dependency-free file --
+the smallest upgrade that keeps this a prototype rather than an
+infrastructure build-out. Swapping this module
 for a real graph database later would not require changing the models.
 """
 
@@ -79,20 +79,19 @@ CREATE TABLE IF NOT EXISTS open_questions (
 
 
 def _hash_secret(secret: str, salt: str) -> str:
-    """PBKDF2-HMAC-SHA256, stdlib only (see storage.py's module docstring on
-    why this file stays dependency-free). Secrets are normalised
-    (trimmed + casefolded) before hashing so 'Blue Whale' and 'blue whale'
-    count as the same word -- people won't remember their own casing."""
+    """PBKDF2-HMAC-SHA256, stdlib only. Secrets are normalised (trimmed and
+    casefolded) before hashing, so 'Blue Whale' and 'blue whale' count as
+    the same word -- nobody remembers their own casing."""
     normalized = secret.strip().casefold()
     return hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt.encode("utf-8"), 100_000).hex()
 
 
 class KnowledgeStore:
     def __init__(self, path: str, check_same_thread: bool = True):
-        # check_same_thread=False is for callers (e.g. a threaded web server)
-        # that serialize their own access to this connection with a lock --
-        # sqlite3 connections aren't safe for unsynchronized concurrent use
-        # regardless of this flag, it only lifts sqlite3's same-thread check.
+        # check_same_thread=False is for callers that serialise their own
+        # access with a lock (e.g. a threaded web server). It only lifts
+        # sqlite3's same-thread check; the connection is still not safe for
+        # unsynchronised concurrent use.
         self.conn = sqlite3.connect(path, check_same_thread=check_same_thread)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
@@ -100,7 +99,7 @@ class KnowledgeStore:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Upgrade DBs created before the secret-word identity feature
+        """Upgrade databases created before the secret-word identity feature
         existed. CREATE TABLE IF NOT EXISTS in SCHEMA only affects brand-new
         databases, so pre-existing ones (chloe_data.db, uni_chat.db, ...)
         need their `people` table patched in place."""
@@ -109,9 +108,8 @@ class KnowledgeStore:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_hash TEXT")
         if "secret_salt" not in cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_salt TEXT")
-        # DBs created before the LLM input parser recorded parse confidence
-        # (2026-08-17) lack the column on `provenance`; existing rows stay
-        # NULL, meaning "not recorded" (all were pattern-parser rows anyway).
+        # Databases predating the LLM input parser lack this column;
+        # existing rows stay NULL, meaning "not recorded".
         prov_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(provenance)")}
         if "parse_confidence" not in prov_cols:
             self.conn.execute("ALTER TABLE provenance ADD COLUMN parse_confidence REAL")
@@ -140,8 +138,8 @@ class KnowledgeStore:
         self.conn.commit()
 
     def set_person_secret(self, person_id: int, secret: str) -> None:
-        """Store a person's secret word/key as a salted PBKDF2 hash -- never
-        the plaintext -- so CHLOE can confirm identity on a later visit."""
+        """Store the secret word as a salted PBKDF2 hash, never the
+        plaintext, so identity can be confirmed on a later visit."""
         salt = secrets.token_hex(16)
         digest = _hash_secret(secret, salt)
         self.conn.execute(
@@ -261,7 +259,7 @@ class KnowledgeStore:
 
     # --------------------------------------------------------- open questions
     def queue_question(self, question: str, reason: str, related_atom_id: Optional[int] = None) -> None:
-        # avoid queuing the exact same open question twice
+        # don't queue the same open question twice
         existing = self.conn.execute(
             "SELECT id FROM open_questions WHERE question = ? AND asked = 0", (question,)
         ).fetchone()

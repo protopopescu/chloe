@@ -3,12 +3,10 @@ Core data model.
 
 Everything CHLOE believes is stored as an Atom: a subject-relation-object
 triple, plus the context that makes it meaningful (scope), who said it and
-when (provenance), and how confident CHLOE is that it's true.
+when (provenance), and how confident CHLOE is that it is true.
 
-This directly implements the "Knowledge Representation" and "Central
-Philosophy" sections of the design notes: knowledge is never an opaque
-number, every belief is inspectable, and facts carry explicit scope rather
-than pretending to be universal.
+Knowledge is never an opaque number: every belief is inspectable, and
+facts carry explicit scope rather than pretending to be universal.
 """
 
 from dataclasses import dataclass, field
@@ -30,15 +28,12 @@ class AtomStatus(str, Enum):
 
 @dataclass
 class Person:
-    """An interlocutor. Trust is domain-specific (a dict of domain -> score)
-    rather than a single global reliability number, per the 'Trust Models'
-    section of CHLOE.md.
+    """An interlocutor. Trust is domain-specific (domain -> score) rather
+    than one global reliability number.
 
-    secret_hash/secret_salt back the optional secret-word identity check:
-    someone who opts in on first meeting can later be asked to confirm the
-    word before CHLOE re-binds their name back to this Person's history and
-    trust score -- otherwise anyone who types a known name would silently
-    inherit that person's accumulated trust and belief history."""
+    secret_hash/secret_salt back the optional secret-word identity check.
+    Without it, anyone typing a known name would inherit that person's
+    accumulated trust and belief history."""
 
     id: int
     name: str
@@ -65,17 +60,13 @@ class Person:
 
 @dataclass
 class Provenance:
-    """A single piece of evidence for or against an atom: who said it,
-    in which interaction, whether it corroborated or contradicted, and
-    when.
+    """A single piece of evidence for or against an atom: who said it, in
+    which interaction, whether it corroborated or contradicted, and when.
 
-    parse_confidence records how sure the input parser was that its
-    structured reading faithfully represents what the person said (set by
-    the LLM parser, llm_nlu.py; None for the deterministic pattern
-    parser, which reports no such number). It is deliberately kept
-    separate from source trust and is NOT folded into belief confidence:
-    "CHLOE misunderstood you" and "your source was wrong" are different
-    failures and must stay distinguishable in the record."""
+    parse_confidence is how sure the input parser was of its reading (set
+    by llm_nlu.py; None for the deterministic pattern parser). It is kept
+    out of the belief-confidence maths on purpose: "CHLOE misunderstood
+    you" and "your source was wrong" must stay distinguishable."""
 
     person_id: int
     interaction_id: int
@@ -86,16 +77,14 @@ class Provenance:
 
 @dataclass
 class Atom:
-    """A single 'idea' / 'atom of reasoning', e.g. 'the sky is blue'.
+    """A single idea, e.g. 'the sky is blue'.
 
-    subject / relation / object mirror CHLOE's original 'X is Y' pattern
-    but generalise it (relation is not always "is").
+    subject / relation / object generalise the original 'X is Y' pattern:
+    the relation is not always "is".
 
-    scope holds the contextual qualifiers CHLOE.md calls out explicitly:
-    a statement like "the sky is blue" is only meaningful relative to
-    atmosphere / illumination / observer / etc. We store scope as free-text
-    key:value-ish conditions rather than trying to formalise them fully in
-    this prototype.
+    scope carries the condition under which the statement holds -- "the sky
+    is blue" is only true relative to illumination, atmosphere, observer.
+    Free text here rather than a formalised condition language.
     """
 
     id: Optional[int]
@@ -124,9 +113,8 @@ class Atom:
 
 @dataclass
 class Interaction:
-    """One turn of dialogue, logged for provenance and replay -- CHLOE.md's
-    'every belief should remain inspectable' extends to being able to trace
-    an atom back to the exact conversational moment it came from."""
+    """One turn of dialogue, logged so an atom can be traced back to the
+    exact conversational moment it came from."""
 
     id: Optional[int]
     person_id: int
@@ -139,10 +127,9 @@ class Interaction:
 class RelationProperties:
     """Declared algebraic properties of a relation.
 
-    CHLOE.md's 'Reasoning' principle: inference engines must never silently
-    assume transitivity/symmetry just because natural language suggests it.
-    Those properties must be declared explicitly, here, per relation -- and
-    default to False.
+    Transitivity and symmetry are never assumed just because English
+    suggests them. They are declared explicitly, per relation, and default
+    to False.
     """
 
     name: str

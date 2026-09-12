@@ -22,6 +22,10 @@ python3 chloe-server.py
 
 Then open `http://localhost:8765` (or whatever `HOST`/`PORT` you set).
 
+The site's nav has a "Paper" link pointing at `CHLOE.pdf` alongside
+`index.html`. The PDF is not in this repository; drop a copy in this folder
+if you want that link to resolve, or remove the link from `index.html`.
+
 If `VLLM_BASE_URL` isn't set, the site still works — chat replies just come
 straight from the symbolic engine's own text instead of being phrased by
 the model, and the status pill reads "engine only" rather than "online".
@@ -65,7 +69,7 @@ processing the request -- and runs `chloe.consolidation.sleep()` over the
 shared knowledge store: merging duplicate atoms, flagging contradictions,
 generating hypotheses for declared-transitive relations, and queuing
 verification questions for the next conversation. The consolidation pass
-itself finishes in well under a second; the rest of the window is honored
+itself finishes in well under a second; the rest of the window is honoured
 as real downtime anyway, matching a genuine nightly "sleep" rather than a
 brief maintenance tick. `GET /api/health` reports `dreaming`,
 `last_dream_summary`, `next_dream_start`, and (while dreaming) `dream_ends_at`

@@ -1,28 +1,26 @@
 """
 The conversational loop.
 
-Implements the original design's core cycle as far as a single-session prototype
-reasonably can:
+The core cycle, as far as a single-session prototype reasonably goes:
 
-    1. Converse.                  -> ChloeEngine.turn()
-    2. Acquire candidate knowledge. -> _handle_statement / _handle_negation
-    3. Consolidate during "sleep".   -> consolidation.sleep() (separate module)
-    4. Generate hypotheses.          -> consolidation.sleep()
-    5. Verify through future conversation. -> _ask_pending_question / _handle_yn_question
-    6. Revise beliefs and source reliability. -> trust.py + this module
+    1. Converse.                           -> turn()
+    2. Acquire candidate knowledge.        -> _handle_statement / _handle_negation
+    3. Consolidate during "sleep".         -> consolidation.sleep()
+    4. Generate hypotheses.                -> consolidation.sleep()
+    5. Verify through later conversation.  -> pending_question / _handle_yn_question
+    6. Revise beliefs and source trust.    -> trust.py and this module
 
-Every exchange is logged as an Interaction and every stored belief carries
-a Provenance record back to the interaction and person that produced it,
-per CHLOE.md's "epistemic transparency" principle -- you can always answer
-"who said this, and when."
+Every exchange is logged as an Interaction, and every stored belief carries
+a Provenance record back to the interaction and person that produced it, so
+"who said this, and when" always has an answer.
 """
 
 from enum import Enum
 from typing import Optional
 
-from . import trust as trust_mod
+from . import grammar, trust as trust_mod
 from .models import Atom, AtomStatus, Interaction, Person, Provenance
-from .llm_nlu import parse  # LLM-first routing parser; same seam as nlu.parse
+from .llm_nlu import parse  # LLM-first routing parser, same interface as nlu.parse
 from .nlu import Utterance, UtteranceType
 from .storage import KnowledgeStore
 
@@ -31,9 +29,9 @@ _NO = {"no", "nope", "nah", "n"}
 
 
 class AuthState(str, Enum):
-    """Where an in-progress identity check stands. NONE means normal
-    conversation; the other three are multi-turn detours that greet()/turn()
-    walk through before self.person is bound to anything."""
+    """Where an in-progress identity check stands. NONE is normal
+    conversation; the others are multi-turn detours that greet()/turn()
+    walk through before self.person is bound."""
 
     NONE = "none"
     AWAITING_SECRET_CHOICE = "awaiting_secret_choice"   # new person: "want to set a secret word?"
@@ -52,17 +50,16 @@ class ChloeEngine:
 
     # ------------------------------------------------------------- greeting
     def greet(self, name: str) -> str:
-        """Look the name up rather than always creating/binding immediately:
-        a name alone isn't proof of identity. Three cases:
+        """Look the name up rather than binding to it: a name alone is not
+        proof of identity. Three cases:
 
-        1. Never seen this name before -> greet normally, then offer to set
-           up a secret word for next time (self-service, opt-in).
-        2. Known name, no secret on file (pre-feature person, or they
-           declined) -> unchanged legacy behaviour, bind immediately.
-        3. Known name *with* a secret on file -> don't bind self.person yet;
-           hold the name pending and ask for the secret. turn() intercepts
-           input until it's confirmed (or gives up after MAX_SECRET_ATTEMPTS
-           and falls back to a distinct, unverified identity).
+        1. New name -> greet, then offer to set up a secret word for next
+           time (opt-in).
+        2. Known name, no secret on file -> bind immediately.
+        3. Known name with a secret on file -> hold the name pending and
+           ask for the secret; turn() intercepts input until it is
+           confirmed, or falls back to a distinct unverified identity after
+           MAX_SECRET_ATTEMPTS.
         """
         existing = self.store.find_person_by_name(name)
 
@@ -103,16 +100,11 @@ class ChloeEngine:
             self.auth_state = AuthState.NONE
             reply = "No problem -- what would you like to talk about?"
         else:
-            # Neither yes nor no. The offer is opt-in and must not hijack the
-            # conversation: greet() already bound self.person before making
-            # the offer, so nothing is left unresolved here except the offer
-            # itself. Drop it and treat this input as an ordinary turn.
-            #
-            # Note the asymmetry with AWAITING_SECRET_VERIFY, which must NOT
-            # fall through: there the claimed identity is still unproven, and
-            # falling through would hand a returning person's accumulated
-            # trust and belief history to anyone who simply ignored the
-            # question.
+            # The offer is opt-in and must not hijack the conversation:
+            # greet() already bound self.person, so nothing is unresolved
+            # but the offer itself. Drop it and take this as a normal turn.
+            # AWAITING_SECRET_VERIFY must NOT fall through this way -- there
+            # the claimed identity is still unproven.
             self.auth_state = AuthState.NONE
             return self.turn(text)
         self._log("human", text)
@@ -148,9 +140,9 @@ class ChloeEngine:
 
         self._secret_attempts += 1
         if self._secret_attempts >= self.MAX_SECRET_ATTEMPTS:
-            # Don't lock the conversation, but don't silently hand over the
-            # real person's trust/belief history either -- fall back to a
-            # distinct, clearly-marked identity of their own.
+            # Neither lock the conversation nor hand over the real person's
+            # trust and belief history: give them a distinct, clearly
+            # marked identity instead.
             fallback_name = f"{self._pending_name} (unverified)"
             self.person = self.store.get_or_create_person(fallback_name)
             self.auth_state = AuthState.NONE
@@ -179,7 +171,7 @@ class ChloeEngine:
 
         assert self.person is not None, "call greet() first"
         self._log("human", text)
-        utt = parse(text)
+        utt = grammar.resolve_referents(parse(text), self.person.name)
 
         if utt.type == UtteranceType.COMMAND:
             reply = self._handle_command(utt)
@@ -198,8 +190,8 @@ class ChloeEngine:
         return reply
 
     def _unknown_reply(self, utt: Utterance) -> str:
-        """The parser refused rather than guessed (llm_nlu.py's contract);
-        say so in a way that matches why."""
+        """The parser refused rather than guessed (llm_nlu.py's contract).
+        Say so in a way that matches why."""
         reason = utt.extra.get("reason")
         if reason == "multiple_statements":
             return "That sounds like more than one thing at once -- tell me one at a time?"
@@ -208,14 +200,27 @@ class ChloeEngine:
         return "I don't understand that yet. Can you rephrase it as '<X> is <Y>'?"
 
     def pending_question(self) -> Optional[str]:
-        """Active conversational verification: if Chloe has an open question
-        (from a contradiction or a sleep-generated hypothesis), surface it."""
+        """Surface an open question, if there is one -- from a
+        contradiction, or from a hypothesis generated during sleep."""
         q = self.store.next_question()
         if not q:
             return None
         self.store.mark_question_asked(q["id"])
         self._log("chloe", q["question"])
         return q["question"]
+
+    # ------------------------------------------------------------- phrasing
+    def _say(self, subject: str, relation: str, obj: str, scope: str = "") -> str:
+        """A stored triple phrased for whoever is speaking: their own name
+        comes back as "you", Chloe's as "I", with the copula agreed."""
+        return grammar.clause(subject, relation, obj, scope,
+                              self.person.name if self.person else "")
+
+    def _say_atom(self, atom: Atom) -> str:
+        return self._say(atom.subject, atom.relation, atom.object, atom.scope)
+
+    def _ask_what(self, subject: str) -> str:
+        return grammar.wh_clause(subject, self.person.name if self.person else "")
 
     # -------------------------------------------------------------- routing
     def _handle_command(self, utt: Utterance) -> str:
@@ -249,10 +254,11 @@ class ChloeEngine:
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is None:
             atom = Atom(id=None, subject=utt.subject, relation=utt.relation, object=utt.obj, scope=utt.scope,
-                        status=AtomStatus.CANDIDATE, confidence=self.person.trust_in())
+                        status=AtomStatus.CANDIDATE, confidence=0.5)
             atom = self.store.save_atom(atom)
             self._attach_provenance(atom, polarity=1, utt=utt)
-            return f"Okay, I'll remember that {atom.statement()}."
+            self._recompute(atom)
+            return f"Okay, I'll remember that {self._say_atom(atom)}."
 
         if atom.object.strip().lower() == utt.obj.strip().lower():
             # corroboration
@@ -260,7 +266,7 @@ class ChloeEngine:
             trust_mod.update_trust_on_corroboration(self.person, atom.domain)
             self.store.save_person(self.person)
             self._recompute(atom)
-            return f"Good, that matches what I already believed: {atom.statement()}."
+            return f"Good, that matches what I already believed: {self._say_atom(atom)}."
 
         # conflicting object, same subject/relation/scope -> contradiction
         self._attach_provenance(atom, polarity=-1, utt=utt)
@@ -272,7 +278,8 @@ class ChloeEngine:
             f"{atom.object} or {utt.obj}{(' (' + atom.scope + ')') if atom.scope else ''} -- which is it?",
             reason="contradiction", related_atom_id=atom.id,
         )
-        return (f"Hmm, that contradicts what I was told before ({atom.subject} {atom.relation} {atom.object}). "
+        return (f"Hmm, that contradicts what I was told before "
+                f"({self._say(atom.subject, atom.relation, atom.object)}). "
                 f"I'll flag it and ask around.")
 
     def _handle_negation(self, utt: Utterance) -> str:
@@ -287,32 +294,37 @@ class ChloeEngine:
                 f"Is it true that {atom.subject} {atom.relation} {atom.object}? I've had that denied.",
                 reason="denial", related_atom_id=atom.id,
             )
-            return f"Okay -- that conflicts with what I believed. I'll double check: {atom.statement()}."
+            return f"Okay -- that conflicts with what I believed. I'll double check: {self._say_atom(atom)}."
 
         # store the negative fact itself, human-readable, as its own atom
         neg_object = f"not {utt.obj}"
         atom = Atom(id=None, subject=utt.subject, relation=utt.relation, object=neg_object, scope=utt.scope,
-                    status=AtomStatus.CANDIDATE, confidence=self.person.trust_in())
+                    status=AtomStatus.CANDIDATE, confidence=0.5)
         atom = self.store.save_atom(atom)
         self._attach_provenance(atom, polarity=1, utt=utt)
-        return f"Okay, I'll remember that {atom.statement()}."
+        self._recompute(atom)
+        return f"Okay, I'll remember that {self._say_atom(atom)}."
 
     def _handle_yn_question(self, utt: Utterance) -> str:
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is None:
-            return f"I don't know. What is {utt.subject}?"
+            return f"I don't know. {grammar.capitalise(self._ask_what(utt.subject))}?"
         matches = atom.object.strip().lower() == utt.obj.strip().lower()
         if matches:
             return f"Yes, as far as I know ({atom.status.value}, confidence {atom.confidence:.2f})."
-        return f"I don't think so -- I believe {atom.statement()} instead (confidence {atom.confidence:.2f})."
+        return (f"I don't think so -- I believe {self._say_atom(atom)} instead "
+                f"(confidence {atom.confidence:.2f}).")
 
     def _handle_wh_question(self, utt: Utterance) -> str:
         candidates = [a for a in self.store.all_atoms() if a.subject.strip().lower() == utt.subject.strip().lower()]
         if not candidates:
+            # The queued question keeps the resolved name: it may be asked
+            # of someone else later, for whom "you" would mean someone else.
             self.store.queue_question(f"What is {utt.subject}?", reason="unknown_term")
-            return f"I don't know yet -- what is {utt.subject}?"
+            return f"I don't know yet -- {self._ask_what(utt.subject)}?"
         best = max(candidates, key=lambda a: a.confidence)
-        return f"{best.subject} {best.relation} {best.object} (confidence {best.confidence:.2f})."
+        clause = self._say(best.subject, best.relation, best.object)
+        return f"{grammar.capitalise(clause)} (confidence {best.confidence:.2f})."
 
     # ------------------------------------------------------------- internals
     def _find_matching_scope_atom(self, subject: str, relation: str, scope: str) -> Optional[Atom]:
@@ -324,18 +336,16 @@ class ChloeEngine:
         return None
 
     def _find_atom_for_statement(self, subject: str, relation: str, obj: str, scope: str) -> Optional[Atom]:
-        """Find the atom a new 'subject relation object' statement should be
-        compared against.
+        """Find the atom a new 'subject relation object' statement should
+        be compared against.
 
-        Same subject+relation+scope can legitimately have more than one
-        atom (e.g. 'Felix is a cat' and 'Felix is an animal' are not
-        contradictory -- 'is' is not a functional/single-valued relation).
-        So: if an atom with the *exact same object* already exists, treat
-        this as corroborating THAT atom (this is also how a hypothesis
-        generated during sleep gets verified/promoted when someone later
-        states it plainly). Otherwise fall back to the atom the store would
-        most naturally treat as "the current belief" (highest confidence)
-        for contradiction reporting.
+        One subject+relation+scope can legitimately have several atoms:
+        'Felix is a cat' and 'Felix is an animal' do not contradict, since
+        'is' is not single-valued. So an atom with the exact same object is
+        corroborated (this is also how a sleep-generated hypothesis gets
+        promoted when someone later states it plainly); otherwise the
+        highest-confidence atom is taken as the current belief, for
+        contradiction reporting.
         """
         key = f"{subject.strip().lower()}|{relation.strip().lower()}"
         scope_norm = (scope or "").strip().lower()
@@ -353,8 +363,7 @@ class ChloeEngine:
             person_id=self.person.id,
             interaction_id=interaction.id if interaction else 0,
             polarity=polarity,
-            # How sure the parser was of its reading (None for the pattern
-            # parser). Recorded, inspectable, and kept out of the
+            # Recorded and inspectable, but kept out of the
             # belief-confidence maths -- see models.Provenance.
             parse_confidence=utt.extra.get("parse_confidence") if utt else None,
         )

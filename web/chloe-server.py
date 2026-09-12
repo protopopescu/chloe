@@ -2,37 +2,29 @@
 """
 CHLOE web chat server.
 
-Serves this folder's static site (index.html/chloe.css/script.js) and two
-JSON endpoints:
-  POST /api/greet  -- first contact for a browser session: takes the real
-                       name the visitor typed and runs it through
-                       ChloeEngine.greet(), which may itself ask to set up
-                       (or confirm) a secret word -- see
-                       prototype/chloe/dialogue.py's AuthState.
-  POST /api/chat    -- every message after that, run through the CHLOE
-                       prototype's symbolic engine (../prototype/chloe)
-                       and then, if a vLLM server is configured, phrased
-                       naturally (see prototype/chloe/persona.py for why
-                       it's split this way).
+Serves this folder's static site (index.html, chloe.css, script.js) and
+two JSON endpoints:
 
-Also runs "dreaming": a background thread that, once a day during a fixed
-window (DREAM_START for DREAM_DURATION_MINUTES -- default 02:00 for 15
-minutes, server-local time), takes the whole site offline for chat and
-runs chloe.consolidation.sleep() over the shared knowledge store --
-merging duplicate atoms, flagging contradictions, generating hypotheses
-for declared-transitive relations, and queuing verification questions.
-This was part of the original design ("sleep produced
-understanding") but wasn't previously scheduled -- it only ran when a
-person typed the "sleep" command mid-conversation. See DREAM_* env vars
-below.
+  POST /api/greet  first contact for a browser session: the name the
+                   visitor typed, run through ChloeEngine.greet(), which
+                   may ask to set up or confirm a secret word (see
+                   dialogue.py's AuthState).
+  POST /api/chat   every message after that, run through the symbolic
+                   engine in ../prototype/chloe and then, if a vLLM server
+                   is configured, phrased naturally.
 
-Stdlib only -- no pip install needed to run this file itself. The chloe
-package it imports is also stdlib-only.
+Also runs "dreaming": a background thread that once a day, during a fixed
+window (DREAM_START for DREAM_DURATION_MINUTES, default 02:00 for 15
+minutes), takes the site offline for chat and runs
+chloe.consolidation.sleep() over the shared knowledge store -- merging
+duplicate atoms, flagging contradictions, generating hypotheses for
+declared-transitive relations, and queuing verification questions. The CLI
+only ever ran that pass on an explicit "sleep" command; here it is
+scheduled. See the DREAM_* environment variables below.
 
-The only thing this file talks to over the network is whatever
-OpenAI-compatible server VLLM_BASE_URL points at (see
-prototype/chloe/llm_client.py); with no VLLM_BASE_URL set it makes no
-network requests at all beyond serving HTTP itself.
+Stdlib only, as is the chloe package it imports: no pip install to run
+this. The only outbound network call is to whatever OpenAI-compatible
+server VLLM_BASE_URL points at.
 
 Run:
     export VLLM_BASE_URL=http://<your-llm-host>:8000/v1
@@ -68,16 +60,13 @@ DB_PATH = SITE_DIR / "uni_chat.db"
 PORT = int(os.getenv("PORT", "8765"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
-# CHLOE dreams once a day, in a fixed window -- not on a repeating
-# interval -- mirroring an actual nightly downtime rather than a periodic
-# maintenance tick. DREAM_START is "HH:MM" in DREAM_TZ (default: the
-# server process's own local time zone; set DREAM_TZ, e.g. "Europe/London",
-# if the server doesn't run in the time zone "night" should mean). The
-# underlying consolidation.sleep() pass finishes in well under a second
-# even with a lot of knowledge, so for most of DREAM_DURATION_MINUTES
-# CHLOE genuinely has nothing left to do -- the window is honored as real
-# downtime anyway, matching the original single-threaded design's
-# distinct offline phase, rather than waking back up early.
+# A fixed window once a day, not a repeating interval: nightly downtime
+# rather than a periodic maintenance tick. DREAM_START is "HH:MM" in
+# DREAM_TZ (default: the server process's own time zone -- set DREAM_TZ,
+# e.g. "Europe/London", if that is not where "night" should fall).
+# consolidation.sleep() finishes in well under a second, so CHLOE has
+# nothing left to do for most of the window. It stays offline anyway,
+# keeping the offline phase a real one rather than waking early.
 DREAM_START = os.getenv("DREAM_START", "02:00")
 DREAM_DURATION_MINUTES = float(os.getenv("DREAM_DURATION_MINUTES", "15"))
 DREAM_TZ = os.getenv("DREAM_TZ")
@@ -106,21 +95,19 @@ def _next_dream_window(now: Optional[datetime] = None) -> Tuple[datetime, dateti
         end = start + timedelta(minutes=DREAM_DURATION_MINUTES)
     return start, end
 
-# One shared knowledge store (so CHLOE accumulates knowledge across every
-# visitor, per the original design), one ChloeEngine per browser session so
-# each visitor gets their own Person/trust identity and turn history.
-# ThreadingHTTPServer handles each request on its own thread, and a single
-# sqlite3 connection isn't safe for unsynchronized concurrent use, so all
-# store/engine access below is serialized with _store_lock.
+# One shared knowledge store, so knowledge accumulates across visitors;
+# one ChloeEngine per browser session, so each visitor has their own
+# Person, trust profile and turn history. ThreadingHTTPServer serves each
+# request on its own thread and a single sqlite3 connection is not safe for
+# unsynchronised concurrent use, so all access below holds _store_lock.
 _store = KnowledgeStore(str(DB_PATH), check_same_thread=False)
 _store_lock = threading.Lock()
 _engines: dict[str, ChloeEngine] = {}
 _histories: dict[str, list] = {}
 MAX_HISTORY_TURNS = 8
 
-# Dreaming state, guarded by its own lock (kept separate from _store_lock so
-# a status check via /api/health is never stuck waiting behind a long-held
-# store lock).
+# Dreaming state, under its own lock so that /api/health never waits
+# behind a long-held _store_lock.
 _dream_lock = threading.Lock()
 _dreaming = False
 _last_dream_summary: Optional[str] = None
@@ -147,7 +134,7 @@ def _dream_status() -> dict:
 
 
 def _run_dream_window(end: datetime) -> None:
-    """Runs the consolidation pass once at the start of the window, then
+    """Runs the consolidation pass at the start of the window, then
     holds 'dreaming' open (real downtime, not a UI artifact) until `end`,
     since a fixed nightly window was chosen deliberately over a repeating
     interval -- see the DREAM_START comment above."""
@@ -173,7 +160,7 @@ def _run_dream_window(end: datetime) -> None:
 
 
 def _dream_scheduler() -> None:
-    """Runs forever in a daemon thread, started from run(). Polls in short
+    """Runs forever in a daemon thread, started by run(). Polls in short
     increments (rather than one long time.sleep) so it correctly notices
     when 'now' has reached the next window even across DST changes."""
     global _next_dream_start, _dream_window_end
@@ -184,22 +171,21 @@ def _dream_scheduler() -> None:
         if now < start:
             time.sleep(min((start - now).total_seconds(), 30))
             continue
-        # now is inside [start, end) -- either right on schedule, or the
-        # server started mid-window (e.g. a restart at 2:07am) and should
-        # resume dreaming for whatever's left rather than skip the window.
+        # Inside [start, end): either on schedule, or the server started
+        # mid-window (a restart at 2:07am) and should serve out the rest of
+        # it rather than skip the window.
         _run_dream_window(end)
 
 
 def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Optional[str]]:
     """Caller must hold _store_lock.
 
-    Returns (engine, greet_reply). greet_reply is only non-None the first
-    time an engine is created for this session_id -- that's ChloeEngine's
-    real greet() text, which (per the secret-word identity feature) may
-    already be asking to set up a secret word or asking a returning name to
-    confirm theirs. On every later call for the same session_id the engine
-    already exists, so greet() is not re-run (that would re-trigger the
-    secret-word dance on every page reload) and greet_reply is None.
+    Returns (engine, greet_reply). greet_reply is non-None only the first
+    time an engine is created for this session_id: it is ChloeEngine's own
+    greet() text, which may be asking to set up a secret word or asking a
+    returning name to confirm theirs. Later calls for the same session_id
+    find the engine already there and do not re-run greet(), which would
+    re-trigger the secret-word exchange on every page reload.
     """
     engine = _engines.get(session_id)
     if engine is not None:
@@ -212,7 +198,7 @@ def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Option
 
 
 def handle_greet(payload: dict) -> dict:
-    """Explicit first-contact step: the website now asks a visitor's real
+    """Explicit first-contact step: the website asks a visitor's real
     name before starting the chat proper (see script.js), and this is what
     turns that name into a genuine ChloeEngine.greet() call -- as opposed
     to the old behaviour of silently greeting a synthetic
@@ -246,10 +232,10 @@ def handle_chat(payload: dict) -> dict:
         return {"session_id": session_id, "reply": "Say something and I'll respond.", "llm_used": False}
 
     with _store_lock:
-        # Normally /api/greet has already created the engine by the time any
-        # chat message arrives. This is only a safety net -- e.g. the server
-        # process restarted mid-session and wiped the in-memory _engines
-        # dict -- so chat never hard-fails just because greet wasn't replayed.
+        # /api/greet normally creates the engine before any chat message
+        # arrives. This is the safety net for when it has not -- a server
+        # restart mid-session wipes the in-memory _engines dict -- so chat
+        # does not hard-fail just because greet was not replayed.
         engine, _ = _get_or_init_engine(session_id, name or f"guest-{session_id[:8]}")
         ground_truth = engine.turn(message)
 

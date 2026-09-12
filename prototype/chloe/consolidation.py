@@ -1,22 +1,19 @@
 """
 Offline consolidation -- "sleep" / "dreaming".
 
-From the design notes, 'Sleeping': during periods of inactivity CHLOE should
-cross-match existing ideas, derive possible new ideas, detect
-inconsistencies, compress redundant knowledge, and prepare questions whose
-answers would maximise future information gain. "Conversation gathered
-evidence. Sleep produced understanding."
+During inactivity CHLOE cross-matches existing ideas, derives possible new
+ones, detects inconsistencies, compresses redundant knowledge, and prepares
+the questions whose answers would tell it most. Conversation gathers
+evidence; sleep produces understanding.
 
-This module runs that pass over everything currently in the KnowledgeStore.
-It is triggered explicitly (the "sleep" command in dialogue.py), mirroring
-the original chloe.sh's respawn-on-exit-code-66 idea of a distinct
-offline phase, without needing an actual process restart.
+This pass runs over everything currently in the KnowledgeStore. It is
+triggered by the "sleep" command in dialogue.py, and on a schedule in the
+web deployment -- a distinct offline phase, as in the original design,
+without an actual process restart.
 
-Crucially, hypothesis generation only uses relation properties that have
-been explicitly declared via store.declare_relation(...) -- see
-models.RelationProperties and its docstring. CHLOE.md's 'Reasoning'
-section is explicit that transitivity/symmetry must never be assumed
-just because English suggests it.
+Hypothesis generation uses only relation properties explicitly declared
+via store.declare_relation(); transitivity and symmetry are never inferred
+from the wording of a relation.
 """
 
 from dataclasses import dataclass, field
@@ -25,8 +22,8 @@ from typing import Dict, List
 from . import trust as trust_mod
 from .models import Atom, AtomStatus
 
-# treat these as the same underlying relation for dedup/merge purposes only
-# (surface synonyms, not a claim about semantics)
+# Treated as the same relation for duplicate detection only -- surface
+# synonyms, not a claim about their semantics.
 RELATION_SYNONYMS = {"is": "is", "are": "is", "was": "is", "were": "is", "means": "is"}
 
 MAX_VERIFICATION_QUESTIONS_PER_SLEEP = 3
@@ -75,7 +72,7 @@ def _merge_duplicates(store, report: SleepReport) -> None:
             seen[sig] = atom
             continue
         keeper = seen[sig]
-        # merge atom into keeper: combine provenance, drop the duplicate
+        # Combine provenance onto the keeper, then drop the duplicate.
         for prov in atom.provenance:
             store.add_provenance(keeper.id, prov)
             keeper.provenance.append(prov)
@@ -104,13 +101,13 @@ def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None
     for rel_name, group in by_relation.items():
         props = store.get_relation(rel_name)
         if not props.transitive:
-            continue  # never assume transitivity for undeclared relations
+            continue  # undeclared relations are not assumed transitive
         by_subject = {a.subject.strip().lower(): a for a in group}
         for a in group:
             bridge = by_subject.get(a.object.strip().lower())
             if bridge is None or bridge is a:
                 continue
-            # a: X rel Y, bridge: Y rel Z  => hypothesize X rel Z
+            # a: X rel Y, bridge: Y rel Z  =>  hypothesis X rel Z
             existing = None
             for cand in group:
                 if cand.subject.strip().lower() == a.subject.strip().lower() and \

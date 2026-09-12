@@ -179,7 +179,7 @@ body{
   box-shadow:0 20px 45px -25px rgba(20,25,40,.25);
 }
 .chat-window-head{
-  display:flex;align-items:center;gap:.6rem;
+  display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
   padding:.9rem 1.1rem;
   border-bottom:1px solid var(--border);
   background:var(--bg-alt);
@@ -187,7 +187,7 @@ body{
 .chat-dots{display:flex;gap:5px}
 .chat-dots span{width:9px;height:9px;border-radius:50%;background:var(--border)}
 .chat-window-title{font-weight:600;font-size:.9rem;margin-right:auto}
-.chat-who{font-size:.78rem;color:var(--text-dim)}
+.chat-who{font-size:.78rem;color:var(--text-dim);white-space:nowrap}
 .chat-who strong{color:var(--text);font-weight:600}
 .chat-who-link{
   background:none;border:none;padding:0;margin:0;
@@ -196,12 +196,26 @@ body{
 }
 .chat-who-link:hover{color:var(--accent-2)}
 .status-pill{
+  /* Fixed height + inline-flex centring rather than vertical padding: the
+     text is monospace and the label changes at runtime, so a padded box
+     sized by the line box leaves descenders ("dreaming...", "engine only")
+     sitting against the bottom stroke while descender-free labels
+     ("online") look clear. Integral height also keeps the 1px rounded
+     border crisp. nowrap + no shrink stop the longer labels wrapping
+     inside the radius once the header runs out of room. */
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  height:22px;
+  box-sizing:border-box;
+  white-space:nowrap;
   font-family:var(--mono);
   font-size:.7rem;
+  line-height:1;
   color:var(--accent-2);
   background:rgba(124,92,255,.08);
   border:1px solid rgba(124,92,255,.25);
-  padding:.2rem .55rem;
+  padding:0 .55rem;
   border-radius:999px;
 }
 .status-pill.online{
@@ -220,9 +234,13 @@ body{
   border-color:rgba(124,92,255,.5);
   animation:dream-pulse 1.8s ease-in-out infinite;
 }
+/* Pulses the fill and border rather than the element's opacity. Animating
+   opacity promotes the pill to its own compositing layer, which re-rasterises
+   the 1px rounded border every frame and makes the outline look ragged
+   while dreaming -- the one state that animates. */
 @keyframes dream-pulse{
-  0%,100%{opacity:1}
-  50%{opacity:.55}
+  0%,100%{background:rgba(124,92,255,.16);border-color:rgba(124,92,255,.5)}
+  50%{background:rgba(124,92,255,.04);border-color:rgba(124,92,255,.18)}
 }
 .chat-input-row input:disabled{opacity:.6;cursor:not-allowed}
 .chat-input-row button:disabled{opacity:.6;cursor:not-allowed}
