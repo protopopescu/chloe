@@ -80,7 +80,6 @@
         <div class="chat-dots"><span></span><span></span><span></span></div>
         <span class="chat-window-title">CHLOE</span>
         <span class="chat-who" id="chatWho" hidden>chatting as <strong id="chatWhoName"></strong> &middot; <button type="button" id="switchPerson" class="chat-who-link">not you?</button></span>
-        <button type="button" id="downloadChat" class="chat-who-link" title="Download this conversation and the beliefs it produced">download</button>
         <span class="status-pill" id="statusPill">connecting&hellip;</span>
       </div>
       <div class="chat-log" id="chatLog">
@@ -90,6 +89,18 @@
         <input type="text" id="chatInput" placeholder="Say something to Chloe&hellip;" autocomplete="off">
         <button type="submit" class="btn btn-primary btn-small" id="chatSubmit">Send</button>
       </form>
+    </div>
+
+    <div class="chat-actions">
+      <button type="button" id="downloadChat" class="btn btn-pale btn-tiny"
+              title="Download this conversation, with the beliefs it produced and the evidence behind them">
+        <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M8 2v7.5M8 10.5 4.75 7.25M8 10.5l3.25-3.25M3 13h10"
+                fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Download Chat
+      </button>
     </div>
   </section>
 

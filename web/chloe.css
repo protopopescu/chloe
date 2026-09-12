@@ -129,6 +129,15 @@ body{
 }
 .btn-ghost:hover{border-color:var(--accent)}
 .btn-small{padding:.6rem 1.1rem;font-size:.88rem}
+.btn-tiny{padding:.4rem .8rem;font-size:.8rem;font-weight:500;gap:.4rem;border-radius:.5rem}
+.btn-pale{
+  background:rgba(47,111,237,.07);
+  color:var(--accent);
+  border-color:rgba(47,111,237,.22);
+}
+.btn-pale:hover{background:rgba(47,111,237,.12);border-color:rgba(47,111,237,.4)}
+.btn-pale:active{transform:none}
+.btn-icon{width:.95em;height:.95em;flex:0 0 auto}
 
 /* Sections */
 .section{padding:4rem 1.5rem}
@@ -241,6 +250,11 @@ body{
 @keyframes dream-pulse{
   0%,100%{background:rgba(124,92,255,.16);border-color:rgba(124,92,255,.5)}
   50%{background:rgba(124,92,255,.04);border-color:rgba(124,92,255,.18)}
+}
+.chat-actions{
+  display:flex;justify-content:flex-end;
+  max-width:640px;
+  margin:.6rem 0 0;
 }
 .chat-input-row input:disabled{opacity:.6;cursor:not-allowed}
 .chat-input-row button:disabled{opacity:.6;cursor:not-allowed}
