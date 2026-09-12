@@ -43,6 +43,44 @@ the model, and the status pill reads "engine only" rather than "online".
 | `DREAM_START` | no | `02:00` | daily start time (`HH:MM`, 24h) of CHLOE's dream window |
 | `DREAM_DURATION_MINUTES` | no | `15` | how long the dream window lasts |
 | `DREAM_TZ` | no | server's local time zone | IANA zone name, e.g. `Europe/London`, if the server doesn't already run in the zone "night" should mean |
+| `CHLOE_BELIEFS_PASSWORD` | for the belief browser | — | **unset means `/beliefs` and `/api/beliefs` do not exist**, rather than existing unprotected |
+| `CHLOE_BELIEFS_USER` | no | `chloe` | username for the same |
+
+## Downloading a conversation
+
+The "download" control in the chat header saves the conversation as JSON.
+It asks the server for `/api/transcript?session_id=...`, which returns the
+*provenance record* rather than the browser's copy of the chat log: every
+turn as it was logged, with timestamps, plus the beliefs those turns
+produced, the evidence behind each one (including other visitors who have
+since corroborated or disputed it), and CHLOE's open questions. That
+survives a page reload; the on-screen log does not.
+
+If the server can't be reached, the button falls back to dumping what is
+visible in the chat window, the same way chat falls back to the engine's own
+reply when the language model is unreachable.
+
+## Browsing the belief store
+
+`/beliefs` is a read-only view of everything CHLOE holds: each belief with
+its scope, status, confidence and the people who supported or disputed it,
+plus per-domain trust and the open questions. `/api/beliefs` returns the
+same as JSON.
+
+**Both are disabled unless `CHLOE_BELIEFS_PASSWORD` is set** — with no
+password they return 404 rather than 403, so the site does not advertise
+that there is anything there. With one set, they are behind HTTP basic auth:
+
+```
+export CHLOE_BELIEFS_PASSWORD='...'     # choose your own; never commit it
+export CHLOE_BELIEFS_USER=chloe         # optional, this is the default
+```
+
+Basic auth sends the password in a reversible encoding on every request, so
+this only means anything behind the HTTPS reverse proxy described under
+*Deploying elsewhere*. It keeps casual visitors out of the store; it is not
+a security boundary. For offline analysis use `../prototype/inspect_db.py`
+instead, which needs no server at all.
 
 ## How a message flows
 

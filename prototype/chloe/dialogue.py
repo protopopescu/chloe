@@ -27,6 +27,14 @@ from .storage import KnowledgeStore
 _YES = {"yes", "yeah", "yep", "sure", "ok", "okay", "y"}
 _NO = {"no", "nope", "nah", "n"}
 
+# Interaction roles. ROLE_EVIDENCE marks the row a Provenance record points
+# at: the canonical form of a belief at the moment it was admitted, not a
+# turn anybody spoke. Transcripts show HUMAN and CHLOE only.
+ROLE_HUMAN = "human"
+ROLE_CHLOE = "chloe"
+ROLE_EVIDENCE = "evidence"
+CONVERSATION_ROLES = (ROLE_HUMAN, ROLE_CHLOE)
+
 
 class AuthState(str, Enum):
     """Where an in-progress identity check stands. NONE is normal
@@ -66,7 +74,6 @@ class ChloeEngine:
         if existing is None:
             self.person = self.store.get_or_create_person(name)
             self.auth_state = AuthState.AWAITING_SECRET_CHOICE
-            self._log("chloe", "Hi! I am Chloe.")
             reply = (
                 f"Hi! I am Chloe. Hello, {name}. If you think you'll talk to me again, "
                 f"I can set up a secret word so I know it's really you next time -- want to do that? (yes/no)"
@@ -78,17 +85,16 @@ class ChloeEngine:
             self._pending_name = name
             self._secret_attempts = 0
             self.auth_state = AuthState.AWAITING_SECRET_VERIFY
-            self._log("chloe", "Hi! I am Chloe.")
             reply = f"Hi! I am Chloe. Welcome back, {name} -- what's your secret word?"
             self._log("chloe", reply)
             return reply
 
         self.person = existing
-        self._log("chloe", "Hi! I am Chloe.")
         seen_before = any(p.person_id == self.person.id for a in self.store.all_atoms() for p in a.provenance)
-        if seen_before:
-            return f"Hi! I am Chloe. Nice to talk to you again, {name}."
-        return f"Hi! I am Chloe. Hello, {name}."
+        reply = (f"Hi! I am Chloe. Nice to talk to you again, {name}." if seen_before
+                 else f"Hi! I am Chloe. Hello, {name}.")
+        self._log("chloe", reply)
+        return reply
 
     # -------------------------------------------------------- secret-word flow
     def _handle_secret_choice(self, text: str) -> str:
@@ -387,7 +393,7 @@ class ChloeEngine:
         return max(candidates, key=lambda a: a.confidence)
 
     def _attach_provenance(self, atom: Atom, polarity: int, utt: Optional[Utterance] = None) -> None:
-        interaction = self._log("human", atom.statement(), commit_only=True)
+        interaction = self._log(ROLE_EVIDENCE, atom.statement(), commit_only=True)
         prov = Provenance(
             person_id=self.person.id,
             interaction_id=interaction.id if interaction else 0,

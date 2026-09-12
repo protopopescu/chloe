@@ -37,11 +37,14 @@ import os
 import sys
 import threading
 import time
+import hmac
 import uuid
+from base64 import b64decode
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 try:
     from zoneinfo import ZoneInfo  # stdlib since Python 3.9
@@ -53,7 +56,7 @@ PROTOTYPE_DIR = SITE_DIR.parent / "prototype"
 sys.path.insert(0, str(PROTOTYPE_DIR))
 
 from chloe import consolidation, llm_client, persona  # noqa: E402
-from chloe.dialogue import ChloeEngine  # noqa: E402
+from chloe.dialogue import CONVERSATION_ROLES, ChloeEngine  # noqa: E402
 from chloe.storage import KnowledgeStore  # noqa: E402
 
 DB_PATH = SITE_DIR / "uni_chat.db"
@@ -67,6 +70,16 @@ HOST = os.getenv("HOST", "0.0.0.0")
 # consolidation.sleep() finishes in well under a second, so CHLOE has
 # nothing left to do for most of the window. It stays offline anyway,
 # keeping the offline phase a real one rather than waking early.
+# The belief browser exposes the whole shared store, so it is off unless a
+# password is configured: absent CHLOE_BELIEFS_PASSWORD, /beliefs and
+# /api/beliefs do not exist at all rather than existing unprotected. Basic
+# auth sends the password in a reversible encoding on every request, so this
+# is only meaningful behind the HTTPS reverse proxy the README already asks
+# for; it keeps casual visitors out, it is not a security boundary.
+BELIEFS_USER = os.getenv("CHLOE_BELIEFS_USER", "chloe")
+BELIEFS_PASSWORD = os.getenv("CHLOE_BELIEFS_PASSWORD")
+BELIEFS_REALM = "CHLOE beliefs"
+
 DREAM_START = os.getenv("DREAM_START", "02:00")
 DREAM_DURATION_MINUTES = float(os.getenv("DREAM_DURATION_MINUTES", "15"))
 DREAM_TZ = os.getenv("DREAM_TZ")
@@ -197,6 +210,73 @@ def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Option
     return engine, reply
 
 
+def collect_beliefs() -> dict:
+    """Caller must hold _store_lock. The store as it stands, with the
+    evidence behind each belief resolved to names."""
+    people = {p.id: p for p in _store.all_people()}
+    effect = {1: "supports", -1: "disputes"}
+    beliefs = []
+    for atom in sorted(_store.all_atoms(), key=lambda a: (-a.confidence, a.subject.lower())):
+        beliefs.append({
+            "id": atom.id,
+            "statement": atom.statement(),
+            "subject": atom.subject, "relation": atom.relation, "object": atom.object,
+            "scope": atom.scope, "domain": atom.domain,
+            "status": atom.status.value, "confidence": round(atom.confidence, 3),
+            "created_at": atom.created_at, "updated_at": atom.updated_at,
+            "evidence": [{
+                "person": people[p.person_id].name if p.person_id in people else f"#{p.person_id}",
+                "effect": effect.get(p.polarity, str(p.polarity)),
+                "at": p.at,
+                "parse_confidence": p.parse_confidence,
+            } for p in atom.provenance],
+        })
+    return {
+        "beliefs": beliefs,
+        "people": [{"name": p.name, "trust": p.trust} for p in people.values()],
+        "open_questions": [{"question": q["question"], "reason": q["reason"]}
+                           for q in _store.pending_questions()],
+    }
+
+
+def collect_transcript(session_id: str, name: str) -> dict:
+    """Caller must hold _store_lock. One visitor's logged conversation, plus
+    the beliefs their turns produced -- the provenance record, not the
+    browser's copy of the chat log, so it survives a page reload."""
+    engine = _engines.get(session_id)
+    person = engine.person if engine and engine.person else _store.find_person_by_name(name or "")
+    if person is None:
+        return {"person": None, "turns": [], "beliefs": [], "open_questions": []}
+
+    people = {p.id: p for p in _store.all_people()}
+    effect = {1: "supports", -1: "disputes"}
+    mine = []
+    for atom in _store.all_atoms():
+        if not any(p.person_id == person.id for p in atom.provenance):
+            continue
+        mine.append({
+            "statement": atom.statement(),
+            "status": atom.status.value,
+            "confidence": round(atom.confidence, 3),
+            "evidence": [{
+                "person": people[p.person_id].name if p.person_id in people else f"#{p.person_id}",
+                "effect": effect.get(p.polarity, str(p.polarity)),
+                "at": p.at,
+                "parse_confidence": p.parse_confidence,
+            } for p in atom.provenance],
+        })
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "person": {"name": person.name, "trust": person.trust},
+        "turns": [{"role": i.role, "text": i.text, "at": i.at}
+                  for i in _store.interactions_for_person(person.id)
+                  if i.role in CONVERSATION_ROLES],
+        "beliefs": mine,
+        "open_questions": [{"question": q["question"], "reason": q["reason"]}
+                           for q in _store.pending_questions()],
+    }
+
+
 def handle_greet(payload: dict) -> dict:
     """Explicit first-contact step: the website asks a visitor's real
     name before starting the chat proper (see script.js), and this is what
@@ -297,16 +377,68 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        # The site is edited and redeployed often; a cached stylesheet has
+        # already been mistaken for a rendering bug. Revalidate every time.
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
+    def _beliefs_authorised(self) -> bool:
+        """Constant-time check of the Basic credentials. Returns False and
+        sends the challenge itself when they are missing or wrong."""
+        header = self.headers.get("Authorization", "")
+        scheme, _, encoded = header.partition(" ")
+        supplied = ""
+        if scheme.lower() == "basic":
+            try:
+                supplied = b64decode(encoded, validate=True).decode("utf-8", "replace")
+            except Exception:
+                supplied = ""
+        expected = f"{BELIEFS_USER}:{BELIEFS_PASSWORD}"
+        if supplied and hmac.compare_digest(supplied, expected):
+            return True
+        body = b"Authentication required.\n"
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", f'Basic realm="{BELIEFS_REALM}", charset="UTF-8"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
     def do_GET(self):
-        if self.path == "/api/health":
+        route = self.path.split("?", 1)[0]
+
+        if route == "/api/health":
             payload = {"ok": True, "vllm_configured": llm_client.is_configured()}
             payload.update(_dream_status())
             self._send_json(200, payload)
             return
-        route = self.path.split("?", 1)[0]
+
+        if route == "/api/transcript":
+            params = parse_qs(urlparse(self.path).query)
+            session_id = (params.get("session_id") or [""])[0]
+            name = (params.get("name") or [""])[0]
+            with _store_lock:
+                data = collect_transcript(session_id, name)
+            self._send_json(200, data)
+            return
+
+        if route in ("/api/beliefs", "/beliefs", "/beliefs.html"):
+            # Unconfigured means absent, not unprotected: no 403 to advertise
+            # that there is something here worth guessing a password for.
+            if not BELIEFS_PASSWORD:
+                self.send_error(404)
+                return
+            if not self._beliefs_authorised():
+                return
+            if route == "/api/beliefs":
+                with _store_lock:
+                    self._send_json(200, collect_beliefs())
+            else:
+                self._send_file("beliefs.html")
+            return
+
         if route in ("/", ""):
             route = "/index.html"
         self._send_file(route.lstrip("/"))
@@ -348,6 +480,12 @@ def run():
     window_end_clock = _dream_window_end.strftime("%H:%M")
     print(f"CHLOE dreams daily {DREAM_START}-{window_end_clock} ({DREAM_TZ or 'server local time'}); "
           f"next window starts {_next_dream_start.isoformat()}", file=sys.stderr)
+    if BELIEFS_PASSWORD:
+        print(f"Belief browser at /beliefs (user {BELIEFS_USER!r}); "
+              f"put it behind HTTPS -- basic auth is not encrypted.", file=sys.stderr)
+    else:
+        print("[warn] CHLOE_BELIEFS_PASSWORD is not set -- /beliefs and /api/beliefs "
+              "are disabled.", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

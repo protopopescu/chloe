@@ -27,6 +27,7 @@ const sendButton = document.getElementById('chatSubmit');
 const chatWho = document.getElementById('chatWho');
 const chatWhoName = document.getElementById('chatWhoName');
 const switchPersonBtn = document.getElementById('switchPerson');
+const downloadBtn = document.getElementById('downloadChat');
 
 const SESSION_KEY = 'chloe_session_id';
 const NAME_KEY = 'chloe_name';
@@ -104,7 +105,7 @@ function enterNameMode() {
 
 function enterChatMode(name) {
   mode = 'chat';
-  chatInput.placeholder = 'Say something to CHLOE…';
+  chatInput.placeholder = 'Say something to Chloe…';
   sendButton.textContent = 'Send';
   chatWhoName.textContent = name;
   chatWho.hidden = false;
@@ -165,6 +166,53 @@ chatForm.addEventListener('submit', async (e) => {
   }
 });
 
+// Download the conversation. The server's copy is the provenance record --
+// every turn as it was logged, with timestamps, plus the beliefs those turns
+// produced and their current confidence -- so it survives page reloads and
+// says more than the log on screen. If the server can't be reached, fall
+// back to dumping what is visible, same as the chat itself falls back to the
+// engine's own reply when the language model is unreachable.
+function saveFile(text, filename, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function visibleTranscript() {
+  return Array.from(chatLog.querySelectorAll('.msg')).map(node => ({
+    role: node.classList.contains('msg-user') ? 'human' : 'chloe',
+    text: node.textContent,
+  }));
+}
+
+async function downloadChat() {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+  const name = getStoredName() || 'visitor';
+  try {
+    const params = new URLSearchParams({ session_id: getSessionId(), name: getStoredName() || '' });
+    const res = await fetch('/api/transcript?' + params, { cache: 'no-store' });
+    if (!res.ok) throw new Error('request failed: ' + res.status);
+    const data = await res.json();
+    if (!data.person) throw new Error('no server-side record yet');
+    saveFile(JSON.stringify(data, null, 2),
+             `chloe-chat-${name}-${stamp}.json`, 'application/json');
+  } catch (err) {
+    saveFile(JSON.stringify({
+      exported_at: new Date().toISOString(),
+      source: 'browser (server record unavailable: ' + err.message + ')',
+      person: { name },
+      turns: visibleTranscript(),
+    }, null, 2), `chloe-chat-${name}-${stamp}.json`, 'application/json');
+  }
+}
+
+downloadBtn.addEventListener('click', downloadChat);
+
 switchPersonBtn.addEventListener('click', () => {
   // A fresh identity needs a fresh session_id: otherwise /api/greet finds
   // the previous person's engine for this session_id and goes straight to
@@ -172,7 +220,7 @@ switchPersonBtn.addEventListener('click', () => {
   localStorage.removeItem(NAME_KEY);
   localStorage.removeItem(SESSION_KEY);
   chatLog.innerHTML = '';
-  addMessage("No problem — I'm CHLOE. What should I call you?", 'bot');
+  addMessage("No problem — I'm Chloe. What should I call you?", 'bot');
   enterNameMode();
 });
 
@@ -180,7 +228,7 @@ async function initChat() {
   const storedName = getStoredName();
   chatLog.innerHTML = '';
   if (!storedName) {
-    addMessage("Hi, I'm CHLOE. What should I call you?", 'bot');
+    addMessage("Hi, I'm Chloe. What should I call you?", 'bot');
     enterNameMode();
     return;
   }

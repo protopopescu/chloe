@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>CHLOE — belief store</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="chloe.css">
+</head>
+<body>
+
+<div class="bg-grid" aria-hidden="true"></div>
+
+<main id="top" class="section wrap">
+  <h1 class="section-title">Belief store</h1>
+  <p class="section-lead">Everything CHLOE currently holds, with the evidence that put it
+    there. Read-only: this page never writes. <a href="index.html">Back to the chat</a>.</p>
+
+  <div class="belief-toolbar">
+    <input type="search" id="filter" placeholder="Filter beliefs&hellip;" autocomplete="off">
+    <button type="button" class="btn btn-ghost btn-small" id="refresh">Refresh</button>
+    <button type="button" class="btn btn-ghost btn-small" id="download">Download JSON</button>
+    <span class="status-pill" id="count">loading&hellip;</span>
+  </div>
+
+  <div id="beliefs"></div>
+
+  <h2 class="section-title" id="people-title" hidden>Interlocutors</h2>
+  <div id="people"></div>
+
+  <h2 class="section-title" id="questions-title" hidden>Open questions</h2>
+  <ul id="questions" class="belief-questions"></ul>
+</main>
+
+<script src="beliefs.js"></script>
+</body>
+</html>

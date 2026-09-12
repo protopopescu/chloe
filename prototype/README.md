@@ -59,8 +59,10 @@ chloe/
   dialogue.py        ChloeEngine: the conversational loop
   consolidation.py   sleep(): contradiction detection, dedup, hypothesis generation
   cli.py / __main__.py   `python -m chloe`
+inspect_db.py       read-only inspector for any CHLOE store (no server needed)
 test_llm_parser.py  offline test suite for the LLM parser (uses a local mock server)
 test_pronouns.py    offline test suite for grammar.py and the pronoun path
+test_inspect.py     offline test suite for the transcript/inspection queries
 ```
 
 ## Using an LLM at the linguistic interfaces
@@ -99,6 +101,21 @@ Test the parser offline (no server, no network — it starts its own mock):
 
 ```
 python3 test_llm_parser.py
+```
+
+## Inspecting a store
+
+Every belief is a row you can read, with the evidence that put it there.
+`inspect_db.py` prints that for any store this project writes — the CLI's
+`chloe_data.db`, the web server's `uni_chat.db`, `demo_chloe.db` — and never
+writes to it:
+
+```
+python3 inspect_db.py demo_chloe.db                 # beliefs, strongest first
+python3 inspect_db.py demo_chloe.db --people        # interlocutors and per-domain trust
+python3 inspect_db.py demo_chloe.db --questions     # what CHLOE still wants to know
+python3 inspect_db.py demo_chloe.db --transcript Dan
+python3 inspect_db.py demo_chloe.db --all --json
 ```
 
 ## Try the scripted demo

@@ -338,3 +338,50 @@ body{
   .site-nav.open{display:flex}
   .timeline li{grid-template-columns:1fr}
 }
+
+/* Belief store (beliefs.html) */
+.belief-toolbar{
+  display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
+  margin:0 0 1.25rem;
+}
+.belief-toolbar input[type=search]{
+  flex:1 1 14rem;min-width:0;
+  padding:.5rem .75rem;
+  font:inherit;font-size:.9rem;
+  color:var(--text);
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:.6rem;
+}
+.belief-toolbar input[type=search]:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.belief{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:.75rem;
+  padding:.85rem 1rem;
+  margin-bottom:.6rem;
+}
+.belief-head{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap}
+.belief-statement{font-weight:600;margin-right:auto}
+.belief-status{
+  font-family:var(--mono);font-size:.68rem;
+  padding:.1rem .5rem;border-radius:999px;
+  border:1px solid var(--border);color:var(--text-dim);
+  white-space:nowrap;
+}
+.belief-confirmed{color:var(--ok);border-color:rgba(31,157,85,.35);background:rgba(31,157,85,.07)}
+.belief-contradicted{color:#c0392b;border-color:rgba(192,57,43,.35);background:rgba(192,57,43,.07)}
+.belief-hypothesis{color:var(--accent-2);border-color:rgba(124,92,255,.35);background:rgba(124,92,255,.07)}
+.belief-confidence{font-family:var(--mono);font-size:.8rem;color:var(--text-dim)}
+.belief-evidence{list-style:none;margin:.55rem 0 0;padding:0;font-size:.85rem;color:var(--text-dim)}
+.belief-evidence li{padding:.12rem 0 .12rem .75rem;border-left:2px solid var(--border)}
+.belief-evidence li.belief-supports{border-left-color:rgba(31,157,85,.45)}
+.belief-evidence li.belief-disputes{border-left-color:rgba(192,57,43,.45)}
+.belief-person{padding:.2rem 0;font-size:.9rem;color:var(--text-dim)}
+.belief-questions{margin:0;padding-left:1.1rem;font-size:.9rem;color:var(--text-dim)}
+.belief-questions li{padding:.18rem 0}
+.belief-reason{
+  font-family:var(--mono);font-size:.68rem;color:var(--accent-2);
+  margin-right:.35rem;
+}
+.belief-empty,.belief-none{color:var(--text-dim);font-size:.9rem}

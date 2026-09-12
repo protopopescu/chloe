@@ -92,6 +92,7 @@ class KnowledgeStore:
         # access with a lock (e.g. a threaded web server). It only lifts
         # sqlite3's same-thread check; the connection is still not safe for
         # unsynchronised concurrent use.
+        self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=check_same_thread)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
@@ -173,6 +174,21 @@ class KnowledgeStore:
         self.conn.commit()
         interaction.id = cur.lastrowid
         return interaction
+
+    def interactions_for_person(self, person_id: int) -> list:
+        rows = self.conn.execute(
+            "SELECT * FROM interactions WHERE person_id = ? ORDER BY id", (person_id,)
+        ).fetchall()
+        return [
+            Interaction(id=r["id"], person_id=r["person_id"], role=r["role"], text=r["text"], at=r["at"])
+            for r in rows
+        ]
+
+    def interaction_by_id(self, interaction_id: int) -> Optional[Interaction]:
+        r = self.conn.execute("SELECT * FROM interactions WHERE id = ?", (interaction_id,)).fetchone()
+        if r is None:
+            return None
+        return Interaction(id=r["id"], person_id=r["person_id"], role=r["role"], text=r["text"], at=r["at"])
 
     # ------------------------------------------------------------------ atoms
     def find_atoms_by_key(self, key: str) -> list:
