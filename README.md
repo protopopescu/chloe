@@ -50,6 +50,7 @@ python3 demo.py             # scripted end-to-end walkthrough
 python3 -m chloe            # interactive session
 python3 test_llm_parser.py  # offline, starts its own mock LLM server
 python3 test_pronouns.py    # offline
+python3 test_naturalisation.py test_questions.py test_smalltalk.py test_inspect.py
 ```
 
 To attach a language model at the linguistic interfaces, or to run the web

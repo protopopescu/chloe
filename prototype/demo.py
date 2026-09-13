@@ -32,21 +32,21 @@ def main():
     dan = ChloeEngine(store)
     print(dan.greet("Dan"))
     for line in [
-        "the sky is blue",
-        "grass is green",
-        "the sky is blue when it is daytime",
-        "the sky is black when it is night",
+        "Claire is an artist",
+        "George is a doctor",
+        "George is available when it is a weekday",
+        "George is unavailable when it is the weekend",
         "Felix is a cat",
         "a cat is an animal",
     ]:
         print(f"Dan: {line}")
         print(" - " + dan.turn(line))
 
-    section("2. Alice, Bob and Eve contradict Dan about the sky")
+    section("2. Alice, Bob and Eve deny what Dan said about Claire")
     for name in ["Alice", "Bob", "Eve"]:
         person = ChloeEngine(store)
         print(person.greet(name))
-        line = "the sky is green"
+        line = "Claire is not an artist"
         print(f"{name}: {line}")
         print(" - " + person.turn(line))
 
@@ -85,8 +85,8 @@ def main():
         print(f"  #{atom.id} {atom.statement()}  [{atom.status.value}, conf={atom.confidence:.2f}]")
 
     section("10. Ask Chloe directly")
-    print("Dan: is the sky blue when it is daytime?")
-    print(" - " + dan3.turn("is the sky blue when it is daytime?"))
+    print("Dan: is George available when it is a weekday?")
+    print(" - " + dan3.turn("is George available when it is a weekday?"))
     print("Dan: what is Felix?")
     print(" - " + dan3.turn("what is Felix?"))
 

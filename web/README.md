@@ -89,12 +89,17 @@ instead, which needs no server at all.
    — this is the authority on what CHLOE actually believes: it stores new
    facts, flags contradictions, updates trust, and produces a short factual
    reply.
-3. If `VLLM_BASE_URL` is set, that factual reply plus recent turn history is
-   sent to the vLLM server (`chloe/llm_client.py`, `chloe/persona.py`) with
-   instructions to phrase it naturally without adding or contradicting
-   anything. If the call fails for any reason (server down, timeout, bad
-   response), the raw engine reply is used instead — chat never goes down
-   just because the model is unreachable.
+3. If `VLLM_BASE_URL` is set, that factual reply is sent to the vLLM server
+   (`chloe/llm_client.py`, `chloe/persona.py`) with instructions to phrase it
+   naturally without adding or contradicting anything. No conversation
+   history goes with it: the model is wording one sentence it was handed, not
+   holding up its end of the dialogue. The phrasing it returns is checked
+   before it is shown — a reply that quotes the instructions or the visitor,
+   swaps the speakers, runs away in length, or introduces a name or number the
+   engine did not supply is discarded. If the call fails for any reason
+   (server down, timeout, bad response) or the check rejects the phrasing, the
+   raw engine reply is used instead — chat never goes down just because the
+   model is unreachable.
 4. The reply is returned as JSON and appended to the chat log in the browser.
 
 ## Dreaming

@@ -23,6 +23,7 @@ class UtteranceType(str, Enum):
     WH_QUESTION = "wh_question"      # "what is X"
     YN_QUESTION = "yn_question"      # "is X Y"
     COMMAND = "command"              # "sleep", "exit", "who do you trust", ...
+    SMALL_TALK = "small_talk"        # "hello", "how are you?", "thanks"
     UNKNOWN = "unknown"
 
 
@@ -42,8 +43,54 @@ _VOCATIVE_RE = re.compile(
 )
 
 
+# The same address at the end: "..., Chloe?". A comma is required, so a
+# statement ending in the name ("the robot is Chloe") is left alone.
+_TRAILING_VOCATIVE_RE = re.compile(r"\s*,\s*chloe\s*([!.?]*)\s*$", re.IGNORECASE)
+
+# Discourse markers and hedges. The belief is the proposition, not the
+# packaging -- but only stripped when something follows, so "I think" alone
+# or "no" alone is left to be classified on its own terms.
+_LEADING_MARKER_RE = re.compile(
+    r"^\s*(?:(?:no|yes|yeah|well|so|actually|honestly|right|ok(?:ay)?|but|and)\s*,\s*|"
+    r"(?:i\s+(?:think|believe|reckon|guess)|you\s+know|to\s+be\s+fair|i\s+mean)\s+)+",
+    re.IGNORECASE,
+)
+_TRAILING_MARKER_RE = re.compile(
+    r"\s*,\s*(?:actually|really|though|you\s+know|i\s+think|i\s+believe|to\s+be\s+fair)"
+    r"\s*([!.?]*)\s*$",
+    re.IGNORECASE,
+)
+
+
 def _strip_vocative(s: str) -> str:
-    return _VOCATIVE_RE.sub("", s, count=1)
+    s = _VOCATIVE_RE.sub("", s, count=1)
+    return _TRAILING_VOCATIVE_RE.sub(r"\1", s, count=1)
+
+
+def _strip_markers(s: str) -> str:
+    """Remove discourse packaging from both ends, leaving the claim."""
+    stripped = _TRAILING_MARKER_RE.sub(r"\1", s, count=1)
+    stripped = _LEADING_MARKER_RE.sub("", stripped, count=1)
+    return stripped if stripped.strip() else s
+
+
+# Phatic openings and closings: not assertions, not failures to understand.
+# Deliberately narrow -- anything carrying a claim must fall through to the
+# patterns below, so this never swallows evidence.
+_SMALL_TALK_RE = re.compile(
+    r"^\s*(?:"
+    r"h(?:i|ello|ey|iya)|yo|greetings|good\s+(?:morning|afternoon|evening|day)|"
+    r"how\s+(?:are|r)\s+(?:you|u)(?:\s+doing)?|how(?:'s| is)\s+it\s+going|"
+    r"what'?s\s+up|thank(?:s| you)(?:\s+very\s+much)?|cheers|"
+    r"nice\s+to\s+meet\s+you|pleased\s+to\s+meet\s+you|"
+    r"good\s+(?:night|bye)|see\s+you|ok(?:ay)?|sure|cool|nice|great"
+    r")\s*[!.?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_small_talk(s: str) -> bool:
+    return bool(_SMALL_TALK_RE.match(s))
 
 
 @dataclass
@@ -71,6 +118,11 @@ def _split_scope(s: str):
 
 COMMANDS = {
     "sleep": "sleep",
+    "sleep, chloe": "sleep",
+    "sleep chloe": "sleep",
+    "go to sleep": "sleep",
+    "go to sleep, chloe": "sleep",
+    "stop": "stop",
     "exit": "exit",
     "quit": "exit",
     "bye": "exit",
@@ -84,6 +136,10 @@ COMMANDS = {
 def parse(text: str) -> Utterance:
     raw = text
     text = _strip_vocative(text)
+    t = _strip_punct(text)
+    if _is_small_talk(t):
+        return Utterance(raw=raw, type=UtteranceType.SMALL_TALK)
+    text = _strip_markers(text)
     t = _strip_punct(text)
     low = t.lower()
 

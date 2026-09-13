@@ -10,7 +10,7 @@ two JSON endpoints:
                    may ask to set up or confirm a secret word (see
                    dialogue.py's AuthState).
   POST /api/chat   every message after that, run through the symbolic
-                   engine in ../prototype/chloe and then, if a vLLM server
+                   engine in ../Prototype/chloe and then, if a vLLM server
                    is configured, phrased naturally.
 
 Also runs "dreaming": a background thread that once a day, during a fixed
@@ -52,15 +52,16 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None
 
 SITE_DIR = Path(__file__).resolve().parent
-PROTOTYPE_DIR = SITE_DIR.parent / "prototype"
+PROTOTYPE_DIR = SITE_DIR.parent / "Prototype"
 sys.path.insert(0, str(PROTOTYPE_DIR))
 
 from chloe import consolidation, llm_client, persona  # noqa: E402
 from chloe.dialogue import CONVERSATION_ROLES, ChloeEngine  # noqa: E402
+from chloe.nlu import COMMANDS, _strip_punct, _strip_vocative  # noqa: E402
 from chloe.storage import KnowledgeStore  # noqa: E402
 
 DB_PATH = SITE_DIR / "uni_chat.db"
-PORT = int(os.getenv("PORT", "8765"))
+PORT = int(os.getenv("PORT", "5010"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
 # A fixed window once a day, not a repeating interval: nightly downtime
@@ -80,7 +81,13 @@ BELIEFS_USER = os.getenv("CHLOE_BELIEFS_USER", "chloe")
 BELIEFS_PASSWORD = os.getenv("CHLOE_BELIEFS_PASSWORD")
 BELIEFS_REALM = "CHLOE beliefs"
 
-DREAM_START = os.getenv("DREAM_START", "02:00")
+# A person can also put CHLOE to sleep on demand with "Sleep, Chloe", as the
+# 2000 version allowed. That runs the same consolidation pass through the same
+# dream window, only briefly, so the site visibly sleeps and wakes instead of
+# the pass happening invisibly inside one request.
+NAP_SECONDS = int(os.getenv("CHLOE_NAP_SECONDS", "12"))
+
+DREAM_START = os.getenv("DREAM_START", "22:00")
 DREAM_DURATION_MINUTES = float(os.getenv("DREAM_DURATION_MINUTES", "15"))
 DREAM_TZ = os.getenv("DREAM_TZ")
 _dream_tzinfo = ZoneInfo(DREAM_TZ) if (DREAM_TZ and ZoneInfo) else None
@@ -116,8 +123,6 @@ def _next_dream_window(now: Optional[datetime] = None) -> Tuple[datetime, dateti
 _store = KnowledgeStore(str(DB_PATH), check_same_thread=False)
 _store_lock = threading.Lock()
 _engines: dict[str, ChloeEngine] = {}
-_histories: dict[str, list] = {}
-MAX_HISTORY_TURNS = 8
 
 # Dreaming state, under its own lock so that /api/health never waits
 # behind a long-held _store_lock.
@@ -126,8 +131,10 @@ _dreaming = False
 _last_dream_summary: Optional[str] = None
 _last_dream_at: Optional[str] = None
 _next_dream_start, _dream_window_end = _next_dream_window()
+# Sessions that asked CHLOE to sleep and are owed its questions on waking.
+_woken_sessions: set = set()
 
-DREAMING_REPLY = "Zzz... Chloe is dreaming right now, consolidating what she's learned. Try again once she wakes up."
+DREAMING_REPLY = "Zzz... Chloe is dreaming right now, consolidating what it has learned. Try again once it wakes up."
 
 
 def _is_dreaming() -> bool:
@@ -172,6 +179,30 @@ def _run_dream_window(end: datetime) -> None:
     print(f"[dream] Chloe woke up: {summary}", file=sys.stderr)
 
 
+def _is_sleep_command(message: str) -> bool:
+    """Exactly the engine's own command table, so "Sleep, Chloe" means here
+    what it means there and the two can never drift apart."""
+    key = _strip_punct(_strip_vocative(message)).lower()
+    return COMMANDS.get(key) == "sleep"
+
+
+def _start_nap(session_id: str) -> bool:
+    """Put CHLOE to sleep briefly, on request. Returns False if it is
+    already dreaming. The window runs on its own thread so the request that
+    asked for it returns at once and the browser can show the sleeping
+    state, rather than hanging for the duration."""
+    with _dream_lock:
+        if _dreaming:
+            return False
+    end = _now() + timedelta(seconds=NAP_SECONDS)
+    global _dream_window_end
+    _dream_window_end = end
+    _woken_sessions.add(session_id)
+    threading.Thread(target=_run_dream_window, args=(end,),
+                     name="chloe-nap", daemon=True).start()
+    return True
+
+
 def _dream_scheduler() -> None:
     """Runs forever in a daemon thread, started by run(). Polls in short
     increments (rather than one long time.sleep) so it correctly notices
@@ -206,7 +237,6 @@ def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Option
     engine = ChloeEngine(_store)
     reply = engine.greet(name)
     _engines[session_id] = engine
-    _histories[session_id] = []
     return engine, reply
 
 
@@ -277,6 +307,28 @@ def collect_transcript(session_id: str, name: str) -> dict:
     }
 
 
+def handle_wake(session_id: str, name: str) -> dict:
+    """What CHLOE has to say now that it is awake.
+
+    Called by the browser once its health poll sees the dream window close.
+    Only a session that actually asked it to sleep is owed this, so an
+    unrelated visitor who happened to be online during the nightly window is
+    not ambushed with questions.
+    """
+    # Still asleep: say nothing and keep the session on the list, so an
+    # early poll can't consume the offer before it has actually woken.
+    if _is_dreaming() or session_id not in _woken_sessions:
+        return {"session_id": session_id, "reply": None}
+    _woken_sessions.discard(session_id)
+    with _store_lock:
+        engine = _engines.get(session_id)
+        if engine is None or engine.person is None:
+            return {"session_id": session_id, "reply": None}
+        engine._questions_declined = False
+        offer = engine.offer_questions()
+    return {"session_id": session_id, "reply": offer}
+
+
 def handle_greet(payload: dict) -> dict:
     """Explicit first-contact step: the website asks a visitor's real
     name before starting the chat proper (see script.js), and this is what
@@ -311,6 +363,17 @@ def handle_chat(payload: dict) -> dict:
     if not message:
         return {"session_id": session_id, "reply": "Say something and I'll respond.", "llm_used": False}
 
+    if _is_sleep_command(message):
+        # The engine's own sleep() would consolidate inside this request and
+        # return instantly; routing it through the dream window instead makes
+        # the site actually go quiet, and the questions are put on waking.
+        with _store_lock:
+            _get_or_init_engine(session_id, name or f"guest-{session_id[:8]}")
+        if _start_nap(session_id):
+            return {"session_id": session_id, "llm_used": False, "dreaming": True,
+                    "reply": "I'm going to sleep for a moment. Back shortly."}
+        return {"session_id": session_id, "reply": DREAMING_REPLY, "dreaming": True, "llm_used": False}
+
     with _store_lock:
         # /api/greet normally creates the engine before any chat message
         # arrives. This is the safety net for when it has not -- a server
@@ -321,34 +384,30 @@ def handle_chat(payload: dict) -> dict:
 
     reply = ground_truth
     llm_used = False
+    rejected = None
     if llm_client.is_configured():
-        history = _histories[session_id]
-        messages = [{"role": "system", "content": persona.system_prompt()}]
-        messages.extend(history[-MAX_HISTORY_TURNS:])
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"The person just said: {message!r}\n\n"
-                    f"Ground truth (what actually happened / what you know -- "
-                    f"do not contradict or add to this): {ground_truth!r}\n\n"
-                    f"Reply to the person now, phrasing that ground truth naturally."
-                ),
-            }
-        )
+        messages = persona.naturalise_request(message, ground_truth)
         try:
-            reply = llm_client.chat(messages)
-            llm_used = True
+            candidate = llm_client.chat(
+                messages, temperature=persona.NATURALISE_TEMPERATURE)
+            # The model's licence is linguistic, not epistemic. A reply that
+            # repeats the instructions, echoes the person, swaps the
+            # speakers, supplies a name or number of its own, or runs away
+            # is dropped for the engine's own text -- the same fallback as
+            # an unreachable server.
+            rejected = persona.rejection_reason(candidate, message, ground_truth)
+            if rejected:
+                print(f"[naturalisation rejected] {rejected}: {candidate[:160]!r}",
+                      file=sys.stderr)
+            else:
+                reply = candidate
+                llm_used = True
         except llm_client.LLMUnavailable as e:
             print(f"[warn] vLLM unavailable, falling back to engine reply: {e}", file=sys.stderr)
             reply = ground_truth
 
-    history = _histories[session_id]
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": reply})
-    del history[: max(0, len(history) - MAX_HISTORY_TURNS * 2)]
-
-    return {"session_id": session_id, "reply": reply, "engine_reply": ground_truth, "llm_used": llm_used}
+    return {"session_id": session_id, "reply": reply, "engine_reply": ground_truth,
+            "llm_used": llm_used, "naturalisation_rejected": rejected}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -413,6 +472,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"ok": True, "vllm_configured": llm_client.is_configured()}
             payload.update(_dream_status())
             self._send_json(200, payload)
+            return
+
+        if route == "/api/wake":
+            params = parse_qs(urlparse(self.path).query)
+            self._send_json(200, handle_wake((params.get("session_id") or [""])[0],
+                                             (params.get("name") or [""])[0]))
             return
 
         if route == "/api/transcript":

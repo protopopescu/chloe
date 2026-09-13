@@ -63,13 +63,29 @@ function setDreaming(dreaming, summary) {
   sendButton.disabled = dreaming;
   if (dreaming) {
     if (!wasDreaming) {
-      addMessage("💤 Chloe is dreaming — merging what she's learned, checking for contradictions, and preparing questions. Back shortly.", 'bot');
+      addMessage("💤 Chloe is dreaming — merging what it has learned, checking for contradictions, and preparing questions. Back shortly.", 'bot');
     }
   } else if (wasDreaming) {
     addMessage('🌅 Chloe woke up.' + (summary ? ' ' + summary : ''), 'bot');
     chatInput.focus();
+    askWhatSheThoughtOf();
   }
   wasDreaming = dreaming;
+}
+
+// Waking is where the questions consolidation produced get put to someone.
+// Only a session that asked it to sleep is owed them, so this is safe to
+// call on every wake -- the server returns nothing for everybody else.
+async function askWhatSheThoughtOf() {
+  try {
+    const params = new URLSearchParams({ session_id: getSessionId(), name: getStoredName() || '' });
+    const res = await fetch('/api/wake?' + params, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.reply) addMessage(data.reply, 'bot');
+  } catch (err) {
+    /* it just stays quiet */
+  }
 }
 
 async function refreshStatus() {

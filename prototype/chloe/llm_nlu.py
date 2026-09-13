@@ -52,6 +52,7 @@ _ALLOWED_TYPES = {
     "negation": UtteranceType.NEGATION,
     "wh_question": UtteranceType.WH_QUESTION,
     "yn_question": UtteranceType.YN_QUESTION,
+    "small_talk": UtteranceType.SMALL_TALK,
     "unknown": UtteranceType.UNKNOWN,
 }
 
@@ -66,7 +67,7 @@ Return ONLY a JSON object (no prose, no code fences) with exactly these
 fields:
 
   "type": one of "statement", "negation", "wh_question", "yn_question",
-          "unknown"
+          "small_talk", "unknown"
   "subject": string or null
   "relation": string or null  (the linking verb, lowercase, e.g. "is",
               "are", "means", "likes")
@@ -89,8 +90,15 @@ Rules:
   about in "subject" and "is" in "relation". For "what colour is the sky?"
   the subject is "the sky" -- the human is asking about the sky.
 - "yn_question": the human asks whether subject relation object holds.
-- Greetings, thanks, chit-chat, opinions with no factual claim: "unknown"
-  with reason "not_parseable".
+- "small_talk": greetings, thanks, farewells, pleasantries, questions about
+  how CHLOE is. These are not failures to understand and not assertions —
+  leave subject, relation and object null. Use "unknown" only when the input
+  seems to be making a claim you cannot read.
+- Strip discourse markers, hedges and fillers, and keep the claim underneath:
+  "actually", "well", "I think", "you know", "to be fair", a leading "no,"
+  or "yes,". The belief is the proposition, not the packaging.
+- If an utterance is BOTH pleasantry and claim ("Hi Chloe, the sky is blue"),
+  classify it by the claim. Small talk never outranks evidence.
 - If the input makes MORE THAN ONE independent assertion ("X is Y and Z is
   W"): "unknown" with reason "multiple_statements". One belief per turn.
 - NEVER invent a command, an instruction, or a field not listed here.
@@ -114,7 +122,15 @@ Input: is the sky blue when it is daytime?
 Input: Felix is a cat and cats are animals
 {"type": "unknown", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.9, "reason": "multiple_statements"}
 Input: thanks, that's lovely!
-{"type": "unknown", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.9, "reason": "not_parseable"}
+{"type": "small_talk", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.95, "reason": null}
+Input: How are you, Chloe?
+{"type": "small_talk", "subject": null, "relation": null, "object": null, "scope": null, "confidence": 0.96, "reason": null}
+Input: The sky is blue, actually.
+{"type": "statement", "subject": "the sky", "relation": "is", "object": "blue", "scope": null, "confidence": 0.95, "reason": null}
+Input: No, the sky is not green
+{"type": "negation", "subject": "the sky", "relation": "is", "object": "green", "scope": null, "confidence": 0.94, "reason": null}
+Input: Well, I think Felix is a cat
+{"type": "statement", "subject": "Felix", "relation": "is", "object": "a cat", "scope": null, "confidence": 0.88, "reason": null}
 Input: who am I?
 {"type": "wh_question", "subject": "I", "relation": "am", "object": null, "scope": null, "confidence": 0.95, "reason": null}
 Input: I am a physicist
@@ -175,6 +191,11 @@ def _to_utterance(raw: str, payload: dict) -> Utterance:
     confidence = round(float(confidence), 3)
 
     reason = payload.get("reason") if isinstance(payload.get("reason"), str) else None
+
+    if utt_type == UtteranceType.SMALL_TALK:
+        # Nothing to validate and nothing to store: no fields, no threshold.
+        return Utterance(raw=raw, type=UtteranceType.SMALL_TALK,
+                         extra={"parser": "llm", "parse_confidence": confidence})
 
     if utt_type == UtteranceType.UNKNOWN:
         return _refuse(raw, confidence, reason or "not_parseable")

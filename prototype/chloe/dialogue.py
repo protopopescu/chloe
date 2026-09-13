@@ -47,6 +47,39 @@ class AuthState(str, Enum):
     AWAITING_SECRET_VERIFY = "awaiting_secret_verify"   # returning name with a secret on file: waiting for it
 
 
+class QuestionState(str, Enum):
+    """Where the question detour stands. Separate from AuthState: identity
+    must be settled before CHLOE asks anybody anything, so the two never
+    overlap."""
+
+    NONE = "none"
+    AWAITING_CONSENT = "awaiting_consent"   # "can I ask you some questions?"
+    AWAITING_ANSWER = "awaiting_answer"     # a question is on the table
+
+
+# Why CHLOE is unsure, in its own words. Taken from the `reason` recorded
+# when the question was queued, so the explanation is the real one rather
+# than a stock line.
+QUESTION_PREAMBLE = {
+    "hypothesis": "This one is my own inference, not something anybody told me",
+    "unresolved_contradiction": "I still can't settle this one",
+    "contradiction": "My sources disagree here",
+    "denial": "I believed this, and then someone denied it",
+    "weak_candidate_recheck": "This has only ever come from one person",
+    "unknown_term": "This one is a blank for me",
+}
+DEFAULT_PREAMBLE = "I'm not sure I have this right"
+
+# Which questions a plain yes or no can actually settle. The others ask
+# "which is it?" and want a statement, so a yes/no vote on them would be
+# recording an answer to a question that was never put.
+YES_NO_REASONS = {"hypothesis", "weak_candidate_recheck", "denial"}
+
+# Ending the detour. "no" is deliberately absent: it is the commonest
+# *answer*, and treating it as a refusal would silently discard evidence.
+_STOP = {"stop", "not now", "later", "no thanks", "enough", "that's enough"}
+
+
 class ChloeEngine:
     def __init__(self, store: KnowledgeStore):
         self.store = store
@@ -55,6 +88,10 @@ class ChloeEngine:
         self._pending_name: Optional[str] = None
         self._secret_attempts = 0
         self.MAX_SECRET_ATTEMPTS = 3
+        self.question_state: QuestionState = QuestionState.NONE
+        self._current_question: Optional[dict] = None
+        self._questions_declined = False   # honoured for the rest of the session
+        self._resume_questions = False     # carry on after a statement-shaped answer
 
     # ------------------------------------------------------------- greeting
     def greet(self, name: str) -> str:
@@ -175,6 +212,15 @@ class ChloeEngine:
         if self.auth_state == AuthState.AWAITING_SECRET_VERIFY:
             return self._handle_secret_verify(text)
 
+        if self.question_state == QuestionState.AWAITING_CONSENT:
+            handled = self._handle_question_consent(text)
+            if handled is not None:
+                return handled
+        elif self.question_state == QuestionState.AWAITING_ANSWER:
+            handled = self._handle_question_answer(text)
+            if handled is not None:
+                return handled
+
         assert self.person is not None, "call greet() first"
         self._log("human", text)
         utt = grammar.resolve_referents(parse(text), self.person.name)
@@ -189,11 +235,50 @@ class ChloeEngine:
             reply = self._handle_yn_question(utt)
         elif utt.type == UtteranceType.WH_QUESTION:
             reply = self._handle_wh_question(utt)
+        elif utt.type == UtteranceType.SMALL_TALK:
+            reply = self._small_talk_reply(utt)
         else:
             reply = self._unknown_reply(utt)
 
+        if self._resume_questions:
+            self._resume_questions = False
+            nxt = self._ask_next_question()
+            if nxt:
+                reply = f"{reply}\n{nxt}"
+
         self._log("chloe", reply)
         return reply
+
+    def _small_talk_reply(self, utt: Utterance) -> str:
+        """A pleasantry is not evidence, and not a failure to understand
+        either. She answers it and writes nothing: the language layer may
+        converse freely precisely because nothing it says reaches the store.
+
+        The 2000 version picked from a short list for its own stock replies
+        (cMisc.hh); with a language model configured, this text is what gets
+        phrased naturally on the way out.
+        """
+        openers = ("hello", "hi", "hey", "greetings", "good morning",
+                   "good afternoon", "good evening", "good day")
+        thanks = ("thank", "cheers")
+        farewell = ("bye", "goodbye", "good night", "see you")
+        low = utt.raw.strip().lower()
+
+        if low.startswith(farewell):
+            return "Goodbye. I'll keep what you told me."
+        if low.startswith(thanks):
+            return "You're welcome."
+        if low.startswith(openers):
+            name = self.person.name if self.person else "there"
+            return f"Hello, {name}. Tell me something, or ask me what I know."
+        if "how are" in low:
+            known = len(self.store.all_atoms())
+            if known:
+                plural = "" if known == 1 else "s"
+                return (f"I'm well, thank you -- {known} thing{plural} on file at the moment, "
+                        f"some better attested than others. How are you?")
+            return "I'm well, thank you, though I don't know much yet. How are you?"
+        return "Noted. Tell me something, or ask me what I know."
 
     def _unknown_reply(self, utt: Utterance) -> str:
         """The parser refused rather than guessed (llm_nlu.py's contract).
@@ -204,6 +289,154 @@ class ChloeEngine:
         if reason == "low_confidence":
             return "I'm not sure I understood that correctly, so I won't store it. Could you say it more plainly?"
         return "I don't understand that yet. Can you rephrase it as '<X> is <Y>'?"
+
+    # -------------------------------------------------------- sleep / wake
+    def sleep(self) -> str:
+        """Consolidate, then wake with whatever that turned up.
+
+        The 2000 version treated "Sleep" as the end of the session: it
+        persisted state, said goodbye and exited, and chloe.sh brought it
+        back. Here the pass is the same idea without the process restart,
+        and waking is where the questions consolidation produced get put to
+        somebody -- which is the point of having slept.
+        """
+        from . import consolidation
+        report = consolidation.sleep(self.store)
+        self._questions_declined = False   # a fresh pass earns a fresh ask
+        self.question_state = QuestionState.NONE
+        self._current_question = None
+        summary = report.summary()
+        self._log("chloe", summary)
+        offer = self.offer_questions()
+        return f"{summary}\n{offer}" if offer else summary
+
+    # ----------------------------------------------------- question detour
+    def offer_questions(self) -> Optional[str]:
+        """Ask permission to put CHLOE's open questions to this person.
+
+        Returns the offer, or None if there is nothing to ask or the person
+        has already said stop this session. Consent is asked for once and
+        then honoured: the point of the detour is that it is a guest in the
+        conversation, not that it gets to interrogate.
+        """
+        if self._questions_declined or self.question_state != QuestionState.NONE:
+            return None
+        if self.store.next_question() is None:
+            return None
+        self.question_state = QuestionState.AWAITING_CONSENT
+        reply = ("While I was asleep I turned over a few things I'm not certain about. "
+                 "Can I ask you some questions? Say stop whenever you want me to stop.")
+        self._log("chloe", reply)
+        return reply
+
+    def _handle_question_consent(self, text: str) -> Optional[str]:
+        """Yes starts the questions; stop ends them for the session. Anything
+        else is read as 'not now' -- the detour gets out of the way and the
+        input is processed as an ordinary turn, so an unanswered offer never
+        swallows what the person actually wanted to say."""
+        choice = text.strip().lower().rstrip(".!?")
+        if choice in _YES:
+            self.question_state = QuestionState.NONE
+            self._log("human", text)
+            return self._ask_next_question() or "Actually, nothing outstanding after all."
+        self.question_state = QuestionState.NONE
+        if choice in _STOP or choice in _NO:
+            self._questions_declined = True
+            self._log("human", text)
+            reply = "Of course -- I'll keep them to myself."
+            self._log("chloe", reply)
+            return reply
+        # neither: treat it as a change of subject and don't ask again
+        self._questions_declined = True
+        return None
+
+    def _ask_next_question(self) -> Optional[str]:
+        """Put the next open question, prefaced with why it is unsure."""
+        q = self.store.next_question()
+        if q is None:
+            self.question_state = QuestionState.NONE
+            self._current_question = None
+            return None
+        self.store.mark_question_asked(q["id"])
+        self._current_question = q
+        self.question_state = QuestionState.AWAITING_ANSWER
+        preamble = QUESTION_PREAMBLE.get(q["reason"], DEFAULT_PREAMBLE)
+        reply = f"{preamble}. {q['question']}"
+        self._log("chloe", reply)
+        return reply
+
+    def _handle_question_answer(self, text: str) -> Optional[str]:
+        """A yes or no settles the belief the question hangs on. Anything
+        else ends the detour and is processed as an ordinary turn -- the
+        question stays open rather than being recorded as answered by
+        something that wasn't an answer."""
+        answer = text.strip().lower().rstrip(".!?")
+        q = self._current_question or {}
+
+        if answer in _STOP:
+            self._end_questions()
+            self._questions_declined = True
+            self._log("human", text)
+            reply = "Okay, I'll stop there. Thanks for the ones you did answer."
+            self._log("chloe", reply)
+            return reply
+
+        if q.get("reason") in YES_NO_REASONS and (answer in _YES or answer in _NO):
+            self._log("human", text)
+            resolved = self._settle_question(q, confirmed=answer in _YES)
+            self.store.mark_question_answered(q["id"])
+            self._end_questions()
+            return self._then_next(resolved)
+
+        if q.get("reason") not in YES_NO_REASONS:
+            # An open question ("which is it?") is answered by a statement.
+            # Close it and let the ordinary path store what they said, which
+            # is what settles the belief -- no special-case vote needed --
+            # then pick the detour back up after that turn is processed.
+            if q.get("id"):
+                self.store.mark_question_answered(q["id"])
+            self._end_questions()
+            self._resume_questions = True
+            return None
+
+        # A yes/no question answered with neither: step aside and leave it open.
+        self._end_questions()
+        self._questions_declined = True
+        return None
+
+    def _end_questions(self) -> None:
+        self.question_state = QuestionState.NONE
+        self._current_question = None
+
+    def _then_next(self, said: str) -> str:
+        """Chain the acknowledgement onto the next question, if there is one."""
+        nxt = self._ask_next_question()
+        return f"{said}\n{nxt}" if nxt else f"{said} That's everything I had -- thank you."
+
+    def _settle_question(self, q: dict, confirmed: bool) -> str:
+        """Route a yes/no onto the belief the question was queued about.
+
+        A question with no related atom (an unknown term, say) has nothing to
+        vote on, so the answer is acknowledged and nothing is written -- an
+        unattached vote would be provenance pointing at nothing.
+        """
+        atom_id = q.get("related_atom_id")
+        if not atom_id:
+            return "Noted, thank you." if confirmed else "Understood."
+        atoms = [a for a in self.store.all_atoms() if a.id == atom_id]
+        if not atoms:
+            return "Thanks -- though I seem to have lost the belief that went with that."
+        atom = atoms[0]
+        self._attach_provenance(atom, polarity=1 if confirmed else -1)
+        if confirmed:
+            trust_mod.update_trust_on_corroboration(self.person, atom.domain)
+        else:
+            trust_mod.update_trust_on_contradiction(self.person, atom.domain)
+        self.store.save_person(self.person)
+        self._recompute(atom)
+        lead = "that supports" if confirmed else "I've noted you disputing"
+        return (f"Thanks -- {lead} {self._say_atom(atom)} "
+                f"(now {atom.status.value}, confidence {atom.confidence:.2f}).")
 
     def pending_question(self) -> Optional[str]:
         """Surface an open question, if there is one -- from a
@@ -260,10 +493,13 @@ class ChloeEngine:
             if not qs:
                 return "No open questions right now."
             return "Open questions: " + " | ".join(q["question"] for q in qs)
+        if cmd == "stop":
+            self._questions_declined = True
+            self.question_state = QuestionState.NONE
+            self._current_question = None
+            return "Okay, I'll stop asking."
         if cmd == "sleep":
-            from . import consolidation
-            report = consolidation.sleep(self.store)
-            return report.summary()
+            return self.sleep()
         if cmd == "exit":
             return "Okay. Bye."
         return "Okay."
@@ -374,13 +610,19 @@ class ChloeEngine:
         """Find the atom a new 'subject relation object' statement should
         be compared against.
 
-        One subject+relation+scope can legitimately have several atoms:
-        'Felix is a cat' and 'Felix is an animal' do not contradict, since
-        'is' is not single-valued. So an atom with the exact same object is
-        corroborated (this is also how a sleep-generated hypothesis gets
-        promoted when someone later states it plainly); otherwise the
-        highest-confidence atom is taken as the current belief, for
-        contradiction reporting.
+        An atom with the exact same object is corroborated -- this is also
+        how a sleep-generated hypothesis gets promoted when someone later
+        states it plainly. Failing that, the highest-confidence atom on the
+        same subject, relation and scope is taken as the current belief and
+        reported as contradicted.
+
+        That fallback is the prototype's known limit on multi-valued
+        relations. One subject+relation+scope can legitimately carry several
+        true objects -- 'Felix is a cat' and 'Felix is an animal' do not
+        conflict -- but nothing here distinguishes a rival value from a
+        compatible one, so the second is reported as a contradiction. A
+        denial ('Felix is not a cat') is the unambiguous case: it attaches
+        opposing provenance to the atom itself and needs no such judgement.
         """
         key = f"{subject.strip().lower()}|{relation.strip().lower()}"
         scope_norm = (scope or "").strip().lower()

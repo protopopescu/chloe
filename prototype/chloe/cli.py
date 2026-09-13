@@ -6,8 +6,8 @@ Usage:
     python -m chloe --db path.db     # custom storage location
     python -m chloe --declare-transitive is   # opt a relation into transitive hypothesis generation
 
-Type ordinary sentences ('the sky is blue'), questions ('what is the sky?',
-'is the sky blue?'), or commands: sleep, what do you know, who do you
+Type ordinary sentences ('Claire is an artist'), questions ('what is Claire?',
+'is Claire an artist?'), or commands: sleep, what do you know, who do you
 trust, show open questions, exit.
 """
 

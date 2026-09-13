@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS open_questions (
     reason TEXT NOT NULL,
     related_atom_id INTEGER,
     created_at TEXT NOT NULL,
-    asked INTEGER NOT NULL DEFAULT 0
+    asked INTEGER NOT NULL DEFAULT 0,
+    answered INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -109,6 +110,12 @@ class KnowledgeStore:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_hash TEXT")
         if "secret_salt" not in cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_salt TEXT")
+        # Databases predating the question mode lack `answered`; existing
+        # rows default to 0, i.e. still open, which is correct for them.
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(open_questions)")}
+        if "answered" not in cols:
+            self.conn.execute("ALTER TABLE open_questions ADD COLUMN answered INTEGER NOT NULL DEFAULT 0")
+
         # Databases predating the LLM input parser lack this column;
         # existing rows stay NULL, meaning "not recorded".
         prov_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(provenance)")}
@@ -277,7 +284,7 @@ class KnowledgeStore:
     def queue_question(self, question: str, reason: str, related_atom_id: Optional[int] = None) -> None:
         # don't queue the same open question twice
         existing = self.conn.execute(
-            "SELECT id FROM open_questions WHERE question = ? AND asked = 0", (question,)
+            "SELECT id FROM open_questions WHERE question = ? AND answered = 0", (question,)
         ).fetchone()
         if existing:
             return
@@ -288,17 +295,33 @@ class KnowledgeStore:
         self.conn.commit()
 
     def next_question(self):
+        """The next question worth putting to someone. Never-asked ones come
+        first; an asked-but-unanswered one comes round again rather than
+        being lost, which is what `asked` alone used to mean."""
         row = self.conn.execute(
-            "SELECT * FROM open_questions WHERE asked = 0 ORDER BY created_at LIMIT 1"
+            "SELECT * FROM open_questions WHERE answered = 0 ORDER BY asked, created_at LIMIT 1"
         ).fetchone()
+        return dict(row) if row else None
+
+    def question_by_id(self, question_id: int):
+        row = self.conn.execute("SELECT * FROM open_questions WHERE id = ?", (question_id,)).fetchone()
         return dict(row) if row else None
 
     def mark_question_asked(self, question_id: int) -> None:
         self.conn.execute("UPDATE open_questions SET asked = 1 WHERE id = ?", (question_id,))
         self.conn.commit()
 
+    def mark_question_answered(self, question_id: int) -> None:
+        self.conn.execute(
+            "UPDATE open_questions SET answered = 1, asked = 1 WHERE id = ?", (question_id,)
+        )
+        self.conn.commit()
+
     def pending_questions(self) -> list:
-        rows = self.conn.execute("SELECT * FROM open_questions WHERE asked = 0 ORDER BY created_at").fetchall()
+        """Everything still open, asked or not."""
+        rows = self.conn.execute(
+            "SELECT * FROM open_questions WHERE answered = 0 ORDER BY created_at"
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def close(self):

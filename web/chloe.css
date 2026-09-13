@@ -179,6 +179,42 @@ body{
 }
 
 /* Chat */
+.chat-note{
+  /* Shares the row under the chat box with the Download Chat button; when
+     open it takes the width and the button stays at the top of the row. */
+  flex:1 1 auto;
+  min-width:0;
+  margin:0;
+  font-size:.86rem;
+  line-height:1.55;
+  color:var(--text-dim);
+}
+.chat-note > summary{
+  /* Same height as the status pill and the Download Chat button. */
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;
+  box-sizing:border-box;
+  font-weight:700;font-size:.78rem;line-height:1;
+  color:var(--accent);
+  background:rgba(47,111,237,.07);
+  border:1px solid rgba(47,111,237,.22);
+  border-radius:50%;
+  cursor:pointer;
+  list-style:none;
+  user-select:none;
+}
+.chat-note > summary::-webkit-details-marker{display:none}
+.chat-note > summary:hover{background:rgba(47,111,237,.14);border-color:rgba(47,111,237,.45)}
+.chat-note > summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chat-note[open] > summary{margin-bottom:.5rem}
+.chat-note-body{
+  padding:.85rem 1rem;
+  background:rgba(47,111,237,.05);
+  border:1px solid rgba(47,111,237,.18);
+  border-left:3px solid var(--accent);
+  border-radius:.5rem;
+}
+.chat-note-body p + p{margin-top:.6rem}
 .chat-window{
   background:var(--card);
   border:1px solid var(--border);
@@ -252,10 +288,11 @@ body{
   50%{background:rgba(124,92,255,.04);border-color:rgba(124,92,255,.18)}
 }
 .chat-actions{
-  display:flex;justify-content:flex-end;
+  display:flex;align-items:flex-start;justify-content:space-between;gap:.6rem;
   max-width:640px;
   margin:.6rem 0 0;
 }
+.chat-actions > .btn{flex:0 0 auto}   /* never squeezed by the open note */
 .chat-input-row input:disabled{opacity:.6;cursor:not-allowed}
 .chat-input-row button:disabled{opacity:.6;cursor:not-allowed}
 .chat-log{

@@ -15,8 +15,8 @@ still runs fully offline.
 python3 -m chloe
 ```
 
-Talk to it: state facts (`the sky is blue`), ask questions
-(`what is the sky?`, `is the sky blue?`), or use commands: `sleep`,
+Talk to it: state facts (`Claire is an artist`), ask questions
+(`what is Claire?`, `is Claire an artist?`), or use commands: `sleep`,
 `what do you know`, `who do you trust`, `show open questions`, `exit`.
 
 Run a second session as a different name and tell it something that
@@ -63,6 +63,9 @@ inspect_db.py       read-only inspector for any CHLOE store (no server needed)
 test_llm_parser.py  offline test suite for the LLM parser (uses a local mock server)
 test_pronouns.py    offline test suite for grammar.py and the pronoun path
 test_inspect.py     offline test suite for the transcript/inspection queries
+test_naturalisation.py  offline test suite for the output interface and its licence checks
+test_questions.py   offline test suite for consolidation questions and the consent-gated ask
+test_smalltalk.py   offline test suite for small talk and proposition extraction
 ```
 
 ## Using an LLM at the linguistic interfaces
