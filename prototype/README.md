@@ -75,7 +75,7 @@ Set the same environment variables the web deployment already uses:
 ```
 export VLLM_BASE_URL=http://<host>:8000/v1     # enables BOTH interfaces
 export VLLM_API_KEY=...                        # only if the server needs one
-export VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct     # optional, this is the default
+export VLLM_MODEL=...                          # optional, has a default
 export CHLOE_PARSE_MIN_CONFIDENCE=0.6          # optional refusal threshold
 ```
 

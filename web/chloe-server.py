@@ -14,8 +14,8 @@ two JSON endpoints:
                    is configured, phrased naturally.
 
 Also runs "dreaming": a background thread that once a day, during a fixed
-window (DREAM_START for DREAM_DURATION_MINUTES, default 02:00 for 15
-minutes), takes the site offline for chat and runs
+window (DREAM_START for DREAM_DURATION_MINUTES), takes the site offline
+for chat and runs
 chloe.consolidation.sleep() over the shared knowledge store -- merging
 duplicate atoms, flagging contradictions, generating hypotheses for
 declared-transitive relations, and queuing verification questions. The CLI
@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None
 
 SITE_DIR = Path(__file__).resolve().parent
-PROTOTYPE_DIR = SITE_DIR.parent / "Prototype"
+PROTOTYPE_DIR = SITE_DIR.parent / "prototype"
 sys.path.insert(0, str(PROTOTYPE_DIR))
 
 from chloe import consolidation, llm_client, persona  # noqa: E402
@@ -381,6 +381,8 @@ def handle_chat(payload: dict) -> dict:
         # does not hard-fail just because greet was not replayed.
         engine, _ = _get_or_init_engine(session_id, name or f"guest-{session_id[:8]}")
         ground_truth = engine.turn(message)
+        # Read inside the lock: it belongs to the turn just taken.
+        stance = engine.last_stance
 
     reply = ground_truth
     llm_used = False
@@ -392,10 +394,12 @@ def handle_chat(payload: dict) -> dict:
                 messages, temperature=persona.NATURALISE_TEMPERATURE)
             # The model's licence is linguistic, not epistemic. A reply that
             # repeats the instructions, echoes the person, swaps the
-            # speakers, supplies a name or number of its own, or runs away
-            # is dropped for the engine's own text -- the same fallback as
-            # an unreachable server.
-            rejected = persona.rejection_reason(candidate, message, ground_truth)
+            # speakers, supplies a name or number of its own, answers a
+            # yes/no question the other way from the core, or runs away is
+            # dropped for the engine's own text -- the same fallback as an
+            # unreachable server.
+            rejected = persona.rejection_reason(candidate, message, ground_truth,
+                                                stance=stance)
             if rejected:
                 print(f"[naturalisation rejected] {rejected}: {candidate[:160]!r}",
                       file=sys.stderr)

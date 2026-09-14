@@ -10,7 +10,7 @@ variables; with VLLM_BASE_URL unset it makes no requests at all.
 
     export VLLM_BASE_URL=http://<your-llm-host>:8000/v1
     export VLLM_API_KEY=...          # only if the server requires one
-    export VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct   # optional, has a default
+    export VLLM_MODEL=...            # optional, has a default
 """
 
 import json

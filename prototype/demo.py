@@ -34,8 +34,8 @@ def main():
     for line in [
         "Claire is an artist",
         "George is a doctor",
-        "George is available when it is a weekday",
-        "George is unavailable when it is the weekend",
+        "George is busy when it is a weekday",
+        "George is available when it is the weekend",
         "Felix is a cat",
         "a cat is an animal",
     ]:

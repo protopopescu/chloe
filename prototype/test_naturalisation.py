@@ -8,9 +8,14 @@ Stdlib only, offline:
     python3 test_naturalisation.py
 """
 
+import os
+import tempfile
 import unittest
 
 from chloe import persona
+from chloe.dialogue import ChloeEngine
+from chloe.models import Stance
+from chloe.storage import KnowledgeStore
 
 MESSAGE = "Claire is an artist and George is a doctor."
 GROUND_TRUTH = "Could you tell me about Claire first, one thing at a time?"
@@ -155,6 +160,89 @@ class RejectionTests(unittest.TestCase):
     def test_every_marker_is_caught(self):
         for marker in persona.SCAFFOLD_MARKERS:
             self.assertIsNotNone(self._reason(f"Sure. {marker} something."), marker)
+
+
+class StanceTests(unittest.TestCase):
+    """The core's yes/no answer must survive being worded.
+
+    The live case: asked "Is Hector an animal?" with only "Hector is a dog"
+    on file, the engine answers no. A model that knows dogs are animals
+    answered yes, and every other check passed it -- "animal" is not a name
+    or a number, and the polarity check looks for the person's words inside
+    the core's reply, which are not there.
+    """
+
+    MESSAGE = "Is Hector an animal?"
+    DENIED = "I don't think so -- I believe Hector is a dog instead (confidence 0.63)."
+    UNKNOWN = "I don't know. What is Hector?"
+
+    def test_the_observed_reversal_is_rejected(self):
+        self.assertIn("answered 'affirm'", persona.rejection_reason(
+            "Yes, Hector is an animal, specifically a dog.",
+            self.MESSAGE, self.DENIED, stance=Stance.DENY))
+
+    def test_the_other_checks_still_miss_it(self):
+        # Without the stance, nothing else catches it -- which is why this
+        # guard exists rather than a wider denylist.
+        self.assertIsNone(persona.rejection_reason(
+            "Yes, Hector is an animal, specifically a dog.",
+            self.MESSAGE, self.DENIED))
+
+    def test_a_faithful_denial_passes(self):
+        self.assertIsNone(persona.rejection_reason(
+            "I don't think so -- I have Hector down as a dog.",
+            self.MESSAGE, self.DENIED, stance=Stance.DENY))
+
+    def test_an_unknown_may_not_come_back_as_an_answer(self):
+        self.assertIsNotNone(persona.rejection_reason(
+            "Yes, a Hector is a kind of animal.",
+            self.MESSAGE, self.UNKNOWN, stance=Stance.UNKNOWN))
+        self.assertIsNone(persona.rejection_reason(
+            "I don't have that yet -- what is Hector?",
+            self.MESSAGE, self.UNKNOWN, stance=Stance.UNKNOWN))
+
+    def test_a_reply_that_does_not_open_with_an_answer_is_left_alone(self):
+        # The guard reads the opening only; a reply that leads with the
+        # belief rather than a yes or no is judged by the other checks.
+        self.assertIsNone(persona.rejection_reason(
+            "Hector is a dog, as far as I have been told.",
+            self.MESSAGE, self.DENIED, stance=Stance.DENY))
+
+
+class EngineStanceTests(unittest.TestCase):
+    """Where the stance the guard compares against comes from."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.path)
+        self.store = KnowledgeStore(self.path)
+        self.dan = ChloeEngine(self.store)
+        self.dan.greet("Dan")
+        self.dan.turn("no")                  # decline the secret-word offer
+        self.dan.turn("Hector is a dog")
+
+    def tearDown(self):
+        self.store.close()
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+    def test_a_different_value_on_file_is_a_denial(self):
+        self.dan.turn("Is Hector an animal?")
+        self.assertEqual(self.dan.last_stance, Stance.DENY)
+
+    def test_a_match_is_an_affirmation(self):
+        self.dan.turn("Is Hector a dog?")
+        self.assertEqual(self.dan.last_stance, Stance.AFFIRM)
+
+    def test_nothing_on_file_is_neither(self):
+        self.dan.turn("Is Rex a dog?")
+        self.assertEqual(self.dan.last_stance, Stance.UNKNOWN)
+
+    def test_a_turn_that_is_not_a_yes_no_question_carries_no_stance(self):
+        self.dan.turn("Is Hector a dog?")
+        self.dan.turn("Claire is an artist")
+        self.assertIsNone(self.dan.last_stance, "a stale stance must not carry over")
 
 
 if __name__ == "__main__":

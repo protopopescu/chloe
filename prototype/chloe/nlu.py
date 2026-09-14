@@ -56,7 +56,7 @@ _LEADING_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_MARKER_RE = re.compile(
-    r"\s*,\s*(?:actually|really|though|you\s+know|i\s+think|i\s+believe|to\s+be\s+fair)"
+    r"\s*,\s*(?:actually|really|though|indeed|you\s+know|i\s+think|i\s+believe|to\s+be\s+fair)"
     r"\s*([!.?]*)\s*$",
     re.IGNORECASE,
 )

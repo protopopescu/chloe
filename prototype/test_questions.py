@@ -118,6 +118,31 @@ class QuestionModeTests(unittest.TestCase):
         self.assertIn("matches what I already believed", reply)
         self.assertNotIn(qid, [q["id"] for q in self.store.pending_questions()])
 
+    def test_a_yes_no_question_answered_in_their_own_words(self):
+        # "Claire is an artist, indeed" settles the question as surely as
+        # "yes": it closes, the statement is recorded by the ordinary path,
+        # and the next question follows in the same reply.
+        asked = self._reach_a_yes_no_question()
+        q = self.dan._current_question
+        atom = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
+        self.assertIn(atom.subject.lower(), asked.lower())
+        before = atom.confidence
+        reply = self.dan.turn(f"{atom.subject} {atom.relation} {atom.object}")
+        after = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
+        self.assertIn("matches what I already believed", reply)
+        self.assertGreater(after.confidence, before)
+        self.assertNotIn(q["id"], [p["id"] for p in self.store.pending_questions()])
+        self.assertFalse(self.dan._questions_declined, "answering is not declining")
+
+    def test_a_statement_about_something_else_still_ends_it(self):
+        self._reach_a_yes_no_question()
+        qid = self.dan._current_question["id"]
+        reply = self.dan.turn("grass is green")
+        self.assertIn("I'll remember that grass is green", reply)
+        self.assertTrue(self.dan._questions_declined)
+        self.assertIn(qid, [p["id"] for p in self.store.pending_questions()],
+                      "a change of subject leaves the question open")
+
     def test_stop_ends_it_and_leaves_the_question_open(self):
         self._reach_a_yes_no_question()
         qid = self.dan._current_question["id"]

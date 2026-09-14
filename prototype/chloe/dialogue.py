@@ -19,7 +19,7 @@ from enum import Enum
 from typing import Optional
 
 from . import grammar, trust as trust_mod
-from .models import Atom, AtomStatus, Interaction, Person, Provenance
+from .models import Atom, AtomStatus, Interaction, Person, Provenance, Stance
 from .llm_nlu import parse  # LLM-first routing parser, same interface as nlu.parse
 from .nlu import Utterance, UtteranceType
 from .storage import KnowledgeStore
@@ -92,6 +92,8 @@ class ChloeEngine:
         self._current_question: Optional[dict] = None
         self._questions_declined = False   # honoured for the rest of the session
         self._resume_questions = False     # carry on after a statement-shaped answer
+        self._pending_answer: Optional[dict] = None   # question this turn may yet answer in its own words
+        self.last_stance: Optional[Stance] = None     # stance of the last reply, for the output-side guard
 
     # ------------------------------------------------------------- greeting
     def greet(self, name: str) -> str:
@@ -205,6 +207,7 @@ class ChloeEngine:
     # ------------------------------------------------------------------ turn
     def turn(self, text: str) -> str:
         """Process one line of human input, return Chloe's reply."""
+        self.last_stance = None   # this turn's stance, set by whatever answers
         if self.auth_state == AuthState.AWAITING_SECRET_CHOICE:
             return self._handle_secret_choice(text)
         if self.auth_state == AuthState.AWAITING_SECRET_VALUE:
@@ -239,6 +242,21 @@ class ChloeEngine:
             reply = self._small_talk_reply(utt)
         else:
             reply = self._unknown_reply(utt)
+
+        if self._pending_answer is not None:
+            # A question was on the table and the reply was neither yes nor
+            # no. Now that it has been parsed, it can be judged: if it
+            # speaks to the belief the question hangs on, it was an answer
+            # in the person's own words. The ordinary path above has already
+            # recorded what they said -- all that is left is to close the
+            # question and carry on down the queue. Anything else is a
+            # change of subject, and she stops asking.
+            q, self._pending_answer = self._pending_answer, None
+            if self._statement_answers(utt, q):
+                self.store.mark_question_answered(q["id"])
+                self._resume_questions = True
+            else:
+                self._questions_declined = True
 
         if self._resume_questions:
             self._resume_questions = False
@@ -325,7 +343,7 @@ class ChloeEngine:
             return None
         self.question_state = QuestionState.AWAITING_CONSENT
         reply = ("While I was asleep I turned over a few things I'm not certain about. "
-                 "Can I ask you some questions? Say stop whenever you want me to stop.")
+                 "Can I ask you some questions? If yes, you then say stop whenever you want me to stop.")
         self._log("chloe", reply)
         return reply
 
@@ -399,10 +417,36 @@ class ChloeEngine:
             self._resume_questions = True
             return None
 
-        # A yes/no question answered with neither: step aside and leave it open.
+        # A yes/no question answered with neither. It may still be an
+        # answer -- "Claire is an artist, indeed" settles the question as
+        # surely as "yes" -- but that cannot be told from the raw text, and
+        # parsing it here would parse it twice. Step aside, let the ordinary
+        # path handle the line, and judge it in turn() once it is parsed.
         self._end_questions()
-        self._questions_declined = True
+        self._pending_answer = q or None
         return None
+
+    def _statement_answers(self, utt: Utterance, q: dict) -> bool:
+        """Whether this utterance answers the question that was on the table.
+
+        The test is the subject and relation of the atom the question hangs
+        on. Agreeing and disagreeing are both answers -- which it was has
+        already been recorded by the ordinary path -- so only the topic is
+        checked. A question with no atom behind it (an unknown term) has
+        nothing to match against and is left open.
+        """
+        from .consolidation import _norm_relation
+        if utt is None or utt.type not in (UtteranceType.STATEMENT, UtteranceType.NEGATION):
+            return False
+        atom_id = q.get("related_atom_id")
+        if not atom_id:
+            return False
+        atoms = [a for a in self.store.all_atoms() if a.id == atom_id]
+        if not atoms:
+            return False
+        atom = atoms[0]
+        return (grammar.same_referent(utt.subject or "", atom.subject)
+                and _norm_relation(utt.relation or "") == _norm_relation(atom.relation))
 
     def _end_questions(self) -> None:
         self.question_state = QuestionState.NONE
@@ -564,15 +608,29 @@ class ChloeEngine:
         return f"Okay, I'll remember that {self._say_atom(atom)}."
 
     def _handle_yn_question(self, utt: Utterance) -> str:
+        """Answer from the store alone, and record which way the answer went.
+
+        The stance is what the output-side guard needs: the reply's wording
+        is the language layer's business, but whether it comes back as a yes,
+        a no, or neither is the core's, and a naturalisation that turns one
+        into another has changed the outcome rather than phrased it.
+        """
         if grammar.same_referent(utt.subject, utt.obj):
+            self.last_stance = Stance.AFFIRM
             return "Yes -- necessarily."
         atom = self._find_atom_for_statement(utt.subject, utt.relation, utt.obj, utt.scope)
         if atom is None:
+            self.last_stance = Stance.UNKNOWN
             wh = utt.extra.get("wh", "what")
             return f"I don't know. {grammar.capitalise(self._ask_wh(utt.subject, wh))}?"
         matches = atom.object.strip().lower() == utt.obj.strip().lower()
         if matches:
+            self.last_stance = Stance.AFFIRM
             return f"Yes, as far as I know ({atom.status.value}, confidence {atom.confidence:.2f})."
+        # Not a denial of the question so much as a different value on file:
+        # nothing here knows that a dog is also an animal, and the reply says
+        # only what the store holds.
+        self.last_stance = Stance.DENY
         return (f"I don't think so -- I believe {self._say_atom(atom)} instead "
                 f"(confidence {atom.confidence:.2f}).")
 

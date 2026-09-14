@@ -83,6 +83,29 @@ _SENTENCE_BREAK = ".!?:;\n"
 # First person and Chloe's own name are hers to use wherever she likes.
 _ALWAYS_PERMITTED = {"i", "i'm", "i've", "i'll", "i'd", CHLOE_NAME.lower()}
 
+# How a reply opens, when it opens by answering. The core knows whether it
+# said yes, no or neither (models.Stance); these say what the naturalisation
+# did, so the two can be compared. Only the opening is examined: an answer
+# to a yes/no question leads with it, and a deeper reading of the sentence
+# would be the guard forming an opinion of its own.
+_AFFIRM_OPENER_RE = re.compile(
+    r"^\W*(?:yes|yeah|yep|yup|correct|true|indeed|right|that(?:'|\u2019)?s right|absolutely|of course)\b",
+    re.IGNORECASE)
+_DENY_OPENER_RE = re.compile(
+    r"^\W*(?:no|nope|nah|not quite|i don(?:'|\u2019)?t think so|i do not think so|actually,?\s+no)\b",
+    re.IGNORECASE)
+
+
+def _opening_stance(text: str):
+    """Return "affirm", "deny", or None if the reply does not open with
+    an answer at all."""
+    if _AFFIRM_OPENER_RE.match(text):
+        return "affirm"
+    if _DENY_OPENER_RE.match(text):
+        return "deny"
+    return None
+
+
 # Negation particles, for comparing a denial with the atom it denies.
 _NEGATION_RE = re.compile(r"\b(?:not|never)\b|n't\b", re.IGNORECASE)
 
@@ -201,12 +224,22 @@ def _predicate(pattern, text: str) -> set:
     return {m.group(1).lower() for m in pattern.finditer(text)}
 
 
-def rejection_reason(reply: str, user_message: str, ground_truth_reply: str):
+def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
+                     stance=None):
     """Why this naturalisation must not be shown, or None if it may be.
 
     Conservative by design: a false rejection costs only the engine's plainer
     wording, while a false acceptance puts text in front of a visitor that
     the epistemic core never decided and cannot account for.
+
+    `stance` is the core's own answer to a yes/no question -- a models.Stance
+    value, or None where the turn was not one. Compared here against the
+    stance the reply opens with, because the polarity check below cannot see
+    this case: it looks for the person's own words inside the core's reply,
+    and a core that answers "I don't think so -- I believe Hector is a dog"
+    to "Is Hector an animal?" never contains them. Without this, a model
+    that knows dogs are animals answers the question the core would not,
+    in a channel that records no source for the answer.
     """
     text = (reply or "").strip()
     if len(text) < MIN_REPLY_CHARS:
@@ -262,6 +295,16 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str):
         shown = _polarities(text, atom_words)
         if core and shown and not (core & shown):
             return "reversed the polarity of what the core said"
+
+    # Stance. The core has already decided yes, no or neither; the model may
+    # word that decision but not take another one. "Neither" is included
+    # deliberately: an "I don't know" that comes back as "Yes" is the same
+    # failure, and the likelier one.
+    if stance is not None:
+        shown_stance = _opening_stance(text)
+        if shown_stance is not None and shown_stance != stance:
+            core_stance = getattr(stance, "value", stance)
+            return f"answered {shown_stance!r} where the core answered {core_stance!r}"
 
     limit = max(LENGTH_FLOOR, LENGTH_SLACK * len(ground_truth_reply.strip()))
     if len(text) > limit:

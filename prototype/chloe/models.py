@@ -19,6 +19,18 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class Stance(str, Enum):
+    """What CHLOE's reply does with a yes/no question -- decided by the
+    engine, and passed to the output-side guard so a naturalisation cannot
+    quietly answer the other way. AFFIRM and DENY are the two answers;
+    UNKNOWN is a reply that gives neither, and must not come back as one.
+    """
+
+    AFFIRM = "affirm"
+    DENY = "deny"
+    UNKNOWN = "unknown"
+
+
 class AtomStatus(str, Enum):
     HYPOTHESIS = "hypothesis"      # generated during sleep, not yet from a person
     CANDIDATE = "candidate"        # stated once, not yet corroborated

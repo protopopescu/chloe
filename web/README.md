@@ -16,7 +16,7 @@ protocol). Without it, everything runs fully offline.
 cd web
 export VLLM_BASE_URL=http://<your-llm-host>:8000/v1
 # export VLLM_API_KEY=...          # only if the server requires one
-# export VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct   # optional, this is the default
+# export VLLM_MODEL=...                        # optional, has a default
 python3 chloe-server.py
 ```
 
@@ -36,7 +36,7 @@ the model, and the status pill reads "engine only" rather than "online".
 |---|---|---|---|
 | `VLLM_BASE_URL` | for LLM phrasing | — | e.g. `http://<your-llm-host>:8000/v1` |
 | `VLLM_API_KEY` | no | — | only if the server requires auth |
-| `VLLM_MODEL` | no | `Qwen/Qwen2.5-3B-Instruct` | must match what the server is actually serving |
+| `VLLM_MODEL` | no | see `DEFAULT_MODEL` | must match what the server is actually serving |
 | `VLLM_TIMEOUT` | no | `30` | seconds |
 | `HOST` | no | `0.0.0.0` | |
 | `PORT` | no | `8765` | |

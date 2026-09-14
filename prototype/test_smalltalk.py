@@ -33,6 +33,9 @@ class ParsingTests(unittest.TestCase):
     def test_hedges_and_markers_are_stripped_from_claims(self):
         cases = {
             "The sky is blue, actually.": ("The sky", "blue", UtteranceType.STATEMENT),
+            # "indeed" is confirmation, not part of what is being confirmed:
+            # stored unstripped it makes a corroboration look like a rival value.
+            "Claire is an artist, indeed.": ("Claire", "an artist", UtteranceType.STATEMENT),
             "Well, I think Felix is a cat": ("Felix", "a cat", UtteranceType.STATEMENT),
             "Honestly, grass is green": ("grass", "green", UtteranceType.STATEMENT),
             "No, the sky is not green": ("the sky", "green", UtteranceType.NEGATION),
