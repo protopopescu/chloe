@@ -35,7 +35,7 @@ def main():
         "Claire is an artist",
         "George is a doctor",
         "George is busy when it is a weekday",
-        "George is available when it is the weekend",
+        "George is not busy when it is the weekend",
         "Felix is a cat",
         "a cat is an animal",
     ]:
