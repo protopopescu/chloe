@@ -181,6 +181,76 @@ def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None
 
 # --------------------------------------------------------- LLM hypotheses
 
+def _generate_hypotheses_llm(store, report: SleepReport) -> None:
+    """Ask the language model to combine what CHLOE has been told.
+
+    The pass above derives what follows from declared relation properties;
+    this one proposes what those properties cannot reach -- two things said
+    about the same subject, a scope that carries across, a name that turns
+    out to be a description. Both end in the same place, a HYPOTHESIS atom
+    and a queued question, because an idea nobody has confirmed is not a
+    belief however it was arrived at.
+
+    Only atoms someone has actually stated are shown: a conjecture built on
+    a conjecture would compound an error nobody has yet had the chance to
+    correct. A broken exchange leaves the pass with nothing and the rest of
+    sleep unaffected.
+    """
+    if not llm_client.is_configured():
+        return
+
+    stated = [a for a in store.all_atoms()
+              if a.status in (AtomStatus.CANDIDATE, AtomStatus.CONFIRMED)]
+    if len(stated) < 2:
+        return
+    stated.sort(key=lambda a: a.updated_at, reverse=True)
+    shown = stated[:MAX_LLM_CONTEXT_ATOMS]
+
+    try:
+        payload = _extract_json(llm_client.chat(
+            [
+                {"role": "system", "content": _HYPOTHESIS_SYSTEM_PROMPT},
+                {"role": "user", "content": "Facts:\n" + _atom_listing(shown)},
+            ],
+            temperature=0.0,  # consolidation should not vary run to run
+            max_tokens=600,
+        ))
+    except (llm_client.LLMUnavailable, BadParse) as e:
+        report.details.append(f"  no hypotheses from the model: {e}")
+        return
+
+    candidates = payload.get("hypotheses")
+    if not isinstance(candidates, list):
+        report.details.append("  no hypotheses from the model: reply carried no 'hypotheses' list")
+        return
+
+    by_id = {a.id: a for a in shown}
+    existing = {_signature(a.subject, a.relation, a.object) for a in store.all_atoms()}
+    kept = 0
+    for cand in candidates:
+        if kept >= MAX_LLM_HYPOTHESES_PER_SLEEP:
+            report.details.append("  remaining proposals left for another night")
+            break
+        hyp, refusal = _validated_hypothesis(cand, by_id, existing)
+        if hyp is None:
+            report.details.append(f"  proposal refused: {refusal}")
+            continue
+
+        store.save_atom(hyp)
+        existing.add(_signature(hyp.subject, hyp.relation, hyp.object))
+        kept += 1
+        report.hypotheses_generated += 1
+        cited = ", ".join(f"#{int(s)}" for s in cand["sources"])
+        report.details.append(f"  hypothesis: {hyp.statement()} (put together from {cited})")
+        store.queue_question(
+            f"Am I right that {hyp.statement()}?",
+            reason="llm_hypothesis", related_atom_id=hyp.id,
+        )
+        report.verification_questions_queued += 1
+
+
+# ------------------------------------------------- the proposal contract
+
 _HYPOTHESIS_SYSTEM_PROMPT = """\
 You are the consolidation step of CHLOE, a knowledge system that stores what
 people have told it as subject-relation-object triples with an optional
@@ -368,74 +438,6 @@ def _validated_hypothesis(cand, by_id: Dict[int, Atom],
         domain=cited[0].domain, status=AtomStatus.HYPOTHESIS,
         confidence=round(floor * HYPOTHESIS_DAMPING, 4),
     ), None
-
-
-def _generate_hypotheses_llm(store, report: SleepReport) -> None:
-    """Ask the language model to combine what CHLOE has been told.
-
-    The pass above derives what follows from declared relation properties;
-    this one proposes what those properties cannot reach -- two things said
-    about the same subject, a scope that carries across, a name that turns
-    out to be a description. Both end in the same place, a HYPOTHESIS atom
-    and a queued question, because an idea nobody has confirmed is not a
-    belief however it was arrived at.
-
-    Only atoms someone has actually stated are shown: a conjecture built on
-    a conjecture would compound an error nobody has yet had the chance to
-    correct. A broken exchange leaves the pass with nothing and the rest of
-    sleep unaffected.
-    """
-    if not llm_client.is_configured():
-        return
-
-    stated = [a for a in store.all_atoms()
-              if a.status in (AtomStatus.CANDIDATE, AtomStatus.CONFIRMED)]
-    if len(stated) < 2:
-        return
-    stated.sort(key=lambda a: a.updated_at, reverse=True)
-    shown = stated[:MAX_LLM_CONTEXT_ATOMS]
-
-    try:
-        payload = _extract_json(llm_client.chat(
-            [
-                {"role": "system", "content": _HYPOTHESIS_SYSTEM_PROMPT},
-                {"role": "user", "content": "Facts:\n" + _atom_listing(shown)},
-            ],
-            temperature=0.0,  # consolidation should not vary run to run
-            max_tokens=600,
-        ))
-    except (llm_client.LLMUnavailable, BadParse) as e:
-        report.details.append(f"  no hypotheses from the model: {e}")
-        return
-
-    candidates = payload.get("hypotheses")
-    if not isinstance(candidates, list):
-        report.details.append("  no hypotheses from the model: reply carried no 'hypotheses' list")
-        return
-
-    by_id = {a.id: a for a in shown}
-    existing = {_signature(a.subject, a.relation, a.object) for a in store.all_atoms()}
-    kept = 0
-    for cand in candidates:
-        if kept >= MAX_LLM_HYPOTHESES_PER_SLEEP:
-            report.details.append("  remaining proposals left for another night")
-            break
-        hyp, refusal = _validated_hypothesis(cand, by_id, existing)
-        if hyp is None:
-            report.details.append(f"  proposal refused: {refusal}")
-            continue
-
-        store.save_atom(hyp)
-        existing.add(_signature(hyp.subject, hyp.relation, hyp.object))
-        kept += 1
-        report.hypotheses_generated += 1
-        cited = ", ".join(f"#{int(s)}" for s in cand["sources"])
-        report.details.append(f"  hypothesis: {hyp.statement()} (put together from {cited})")
-        store.queue_question(
-            f"Am I right that {hyp.statement()}?",
-            reason="llm_hypothesis", related_atom_id=hyp.id,
-        )
-        report.verification_questions_queued += 1
 
 
 def _queue_verification_for_weak_atoms(store, report: SleepReport) -> None:
