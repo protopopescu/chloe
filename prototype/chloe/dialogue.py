@@ -62,6 +62,7 @@ class QuestionState(str, Enum):
 # than a stock line.
 QUESTION_PREAMBLE = {
     "hypothesis": "This one is my own inference, not something anybody told me",
+    "llm_hypothesis": "This one I put together myself, out of more than one thing I was told",
     "unresolved_contradiction": "I still can't settle this one",
     "contradiction": "My sources disagree here",
     "denial": "I believed this, and then someone denied it",
@@ -73,7 +74,7 @@ DEFAULT_PREAMBLE = "I'm not sure I have this right"
 # Which questions a plain yes or no can actually settle. The others ask
 # "which is it?" and want a statement, so a yes/no vote on them would be
 # recording an answer to a question that was never put.
-YES_NO_REASONS = {"hypothesis", "weak_candidate_recheck", "denial"}
+YES_NO_REASONS = {"hypothesis", "llm_hypothesis", "weak_candidate_recheck", "denial"}
 
 # Ending the detour. "no" is deliberately absent: it is the commonest
 # *answer*, and treating it as a refusal would silently discard evidence.

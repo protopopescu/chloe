@@ -58,6 +58,7 @@ chloe/
   trust.py          trust updates + confidence scoring
   dialogue.py        ChloeEngine: the conversational loop
   consolidation.py   sleep(): contradiction detection, dedup, hypothesis generation
+                     (declared relation properties, and LLM-proposed conjectures)
   cli.py / __main__.py   `python -m chloe`
 inspect_db.py       read-only inspector for any CHLOE store (no server needed)
 test_llm_parser.py  offline test suite for the LLM parser (uses a local mock server)
@@ -66,6 +67,7 @@ test_inspect.py     offline test suite for the transcript/inspection queries
 test_naturalisation.py  offline test suite for the output interface and its licence checks
 test_questions.py   offline test suite for consolidation questions and the consent-gated ask
 test_smalltalk.py   offline test suite for small talk and proposition extraction
+test_consolidation.py  offline test suite for the sleep pass and LLM hypotheses
 ```
 
 ## Using an LLM at the linguistic interfaces
@@ -77,6 +79,9 @@ export VLLM_BASE_URL=http://<host>:8000/v1     # enables BOTH interfaces
 export VLLM_API_KEY=...                        # only if the server needs one
 export VLLM_MODEL=...                          # optional, has a default
 export CHLOE_PARSE_MIN_CONFIDENCE=0.6          # optional refusal threshold
+export CHLOE_HYPOTHESIS_GROUNDED=1             # optional, see below
+export CHLOE_HYPOTHESIS_MIN_CONFIDENCE=0.6     # optional refusal threshold
+export CHLOE_MAX_LLM_HYPOTHESES=5              # optional, per sleep
 ```
 
 With `VLLM_BASE_URL` set, `dialogue.ChloeEngine` routes input through
@@ -96,9 +101,41 @@ the belief-confidence maths, so "CHLOE misunderstood you" stays
 distinguishable from "your source was wrong". Pattern-parser rows store
 no number there.
 
+### Hypotheses at sleep
+
+`consolidation.sleep()` generates new ideas two ways. The first derives
+what follows from relation properties declared through
+`store.declare_relation()`. The second, `_generate_hypotheses_llm()`, asks
+the model to combine what CHLOE has been told into candidates the algebra
+cannot reach: "Claire is an artist" and "Claire is tired" give "Claire is a
+tired artist", which no transitivity produces. Both end in a `HYPOTHESIS`
+atom and a queued question, so nothing the model proposes is a belief until
+somebody answers.
+
+Every candidate is validated before it is kept: it must cite atoms that
+were actually shown to it, must not restate something on file, must clear
+the confidence floor, must name a single value rather than two joined by a
+comma or an "and", must carry the condition of the facts it rests on and
+may not span two different ones, and — with `CHLOE_HYPOTHESIS_GROUNDED=1`,
+the default — may use only words that appear in the atoms it cites. That
+last check is what keeps the model a linguistic interface here too: it may
+recombine what it was told, but "Claire is a painter" is refused, because
+`painter` came from the model and not from anybody. Setting the variable to
+`0` lifts it, and the model may then conjecture from its own knowledge,
+with whoever answers the question becoming the source. The model's
+self-reported confidence is a filter only, never part of the belief maths:
+a hypothesis is capped at the weakest atom it rests on, damped.
+
+An atom is one triple with one scope, and the validator holds proposals to
+that shape. Given "the sky is blue (daytime)" and "the sky is grey
+(overcast)" the natural sentence is "blue in daytime, and grey when
+overcast" — two facts, already on file as two atoms, and not something this
+representation can hold as one. Proposals spanning two conditions, joining
+two values, or hiding a condition inside the object are refused.
+
 Privacy note: with a server configured, ordinary conversational input is
-sent to that endpoint. Secret words are not — the identity flow consumes
-them before parsing.
+sent to that endpoint, and so are the stored triples during sleep. Secret
+words are not — the identity flow consumes them before parsing.
 
 Test the parser offline (no server, no network — it starts its own mock):
 
