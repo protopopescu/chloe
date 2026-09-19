@@ -6,7 +6,7 @@ tautology are refused rather than stored.
 
 Runs offline against the pattern parser. Stdlib only:
 
-    python3 test_pronouns.py
+    python3 -m unittest tests.test_pronouns
 """
 
 import os

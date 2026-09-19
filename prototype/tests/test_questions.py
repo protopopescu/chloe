@@ -5,7 +5,7 @@ on, and what happens when someone declines or changes the subject.
 
 Stdlib only, offline:
 
-    python3 test_questions.py
+    python3 -m unittest tests.test_questions
 """
 
 import os

@@ -5,7 +5,7 @@ licence is rejected in favour of the engine's own text.
 
 Stdlib only, offline:
 
-    python3 test_naturalisation.py
+    python3 -m unittest tests.test_naturalisation
 """
 
 import os

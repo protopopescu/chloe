@@ -4,7 +4,7 @@ from, and inspect_db.py's read-only collectors.
 
 Stdlib only, no server, no network:
 
-    python3 test_inspect.py
+    python3 -m unittest tests.test_inspect
 """
 
 import os

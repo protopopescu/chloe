@@ -6,7 +6,7 @@ is not there.
 The model is stubbed throughout -- these check the contract around it, not
 the model. Stdlib only, offline:
 
-    python3 test_consolidation.py
+    python3 -m unittest tests.test_consolidation
 """
 
 import json

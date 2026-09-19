@@ -8,7 +8,7 @@ LLM parse, honest refusal, low-confidence refusal, contract violation,
 malformed reply, server unreachable, command interception -- plus the
 storage migration that adds parse_confidence to pre-existing databases.
 
-Run: python3 test_llm_parser.py       (no network, no dependencies)
+Run: python3 -m unittest tests.test_llm_parser       (no network, no dependencies)
 """
 
 import json

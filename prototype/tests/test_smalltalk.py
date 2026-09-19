@@ -6,7 +6,7 @@ claims, and neither writes anything CHLOE wasn't actually told.
 Stdlib only, offline (the pattern parser; the LLM path is prompted for the
 same distinctions and covered by test_llm_parser.py):
 
-    python3 test_smalltalk.py
+    python3 -m unittest tests.test_smalltalk
 """
 
 import os

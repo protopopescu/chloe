@@ -61,13 +61,14 @@ chloe/
                      (declared relation properties, and LLM-proposed conjectures)
   cli.py / __main__.py   `python -m chloe`
 inspect_db.py       read-only inspector for any CHLOE store (no server needed)
-test_llm_parser.py  offline test suite for the LLM parser (uses a local mock server)
-test_pronouns.py    offline test suite for grammar.py and the pronoun path
-test_inspect.py     offline test suite for the transcript/inspection queries
-test_naturalisation.py  offline test suite for the output interface and its licence checks
-test_questions.py   offline test suite for consolidation questions and the consent-gated ask
-test_smalltalk.py   offline test suite for small talk and proposition extraction
-test_consolidation.py  offline test suite for the sleep pass and LLM hypotheses
+tests/              offline test suites; python3 -m unittest discover -s tests -t .
+  test_llm_parser.py      the LLM parser (uses a local mock server)
+  test_pronouns.py        grammar.py and the pronoun path
+  test_inspect.py         the transcript/inspection queries
+  test_naturalisation.py  the output interface and its licence checks
+  test_questions.py       consolidation questions and the consent-gated ask
+  test_smalltalk.py       small talk and proposition extraction
+  test_consolidation.py   the sleep pass and LLM hypotheses
 ```
 
 ## Using an LLM at the linguistic interfaces
@@ -140,7 +141,13 @@ words are not — the identity flow consumes them before parsing.
 Test the parser offline (no server, no network — it starts its own mock):
 
 ```
-python3 test_llm_parser.py
+python3 -m unittest tests.test_llm_parser
+```
+
+or every suite at once:
+
+```
+python3 -m unittest discover -s tests -t .
 ```
 
 ## Inspecting a store
