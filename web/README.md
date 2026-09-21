@@ -38,13 +38,18 @@ the model, and the status pill reads "engine only" rather than "online".
 | `VLLM_API_KEY` | no | — | only if the server requires auth |
 | `VLLM_MODEL` | no | see `DEFAULT_MODEL` | must match what the server is actually serving |
 | `VLLM_TIMEOUT` | no | `30` | seconds |
-| `HOST` | no | `0.0.0.0` | |
+| `HOST` | no | `127.0.0.1` | loopback by default, since this server is meant to sit behind a reverse proxy. Set `0.0.0.0` only to expose it directly, and note that `CHLOE_DAILY_EXCHANGES` then has no trustworthy address to work from |
 | `PORT` | no | `8765` | |
 | `DREAM_START` | no | `02:00` | daily start time (`HH:MM`, 24h) of CHLOE's dream window |
 | `DREAM_DURATION_MINUTES` | no | `15` | how long the dream window lasts |
 | `DREAM_TZ` | no | server's local time zone | IANA zone name, e.g. `Europe/London`, if the server doesn't already run in the zone "night" should mean |
 | `CHLOE_BELIEFS_PASSWORD` | for the belief browser | — | **unset means `/beliefs` and `/api/beliefs` do not exist**, rather than existing unprotected |
 | `CHLOE_BELIEFS_USER` | no | `chloe` | username for the same |
+| `CHLOE_DAILY_EXCHANGES` | no | `20` | chat turns plus new-session greets allowed per client address per day; `0` disables the budget. The address comes from the last `X-Forwarded-For` hop, which is only trustworthy while `HOST` stays on loopback |
+| `CHLOE_DAILY_NAPS` | no | `5` | how many of the day's exchanges one address may spend on "Sleep, Chloe"; a nap takes the site quiet for everybody, so it is bounded separately and costs an exchange as well. `0` removes the separate limit |
+| `CHLOE_MAX_SESSIONS` | no | `500` | live browser sessions held in memory; past this the least recently used is dropped and its next message rebuilds it |
+| `CHLOE_MAX_BODY_BYTES` | no | `8192` | largest accepted POST body; a larger declared `Content-Length` is refused with 413 before anything is read |
+| `CHLOE_DB_PATH` | no | `uni_chat.db` beside the server | where the knowledge store lives, for keeping data outside the directory the code runs from |
 
 ## Downloading a conversation
 

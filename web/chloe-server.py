@@ -40,6 +40,7 @@ import time
 import hmac
 import uuid
 from base64 import b64decode
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -59,9 +60,13 @@ from chloe import consolidation, llm_client, persona, questions  # noqa: E402
 from chloe.dialogue import CONVERSATION_ROLES, ChloeEngine  # noqa: E402
 from chloe.nlu import MAX_INPUT_CHARS  # noqa: E402
 from chloe.storage import KnowledgeStore  # noqa: E402
-DB_PATH = SITE_DIR / "uni_chat.db"
+_db_env = os.getenv("CHLOE_DB_PATH")
+DB_PATH = Path(_db_env).expanduser() if _db_env else SITE_DIR / "uni_chat.db"
 PORT = int(os.getenv("PORT", "5010"))
-HOST = os.getenv("HOST", "0.0.0.0")
+# Loopback by default: this server is meant to sit behind a reverse proxy,
+# and the daily budget trusts X-Forwarded-For only because nothing can reach
+# it except through one. Exposing it directly is the deliberate act.
+HOST = os.getenv("HOST", "127.0.0.1")
 
 # A fixed window once a day, not a repeating interval: nightly downtime
 # rather than a periodic maintenance tick. DREAM_START is "HH:MM" in
@@ -85,6 +90,50 @@ BELIEFS_REALM = "CHLOE beliefs"
 # dream window, only briefly, so the site visibly sleeps and wakes instead of
 # the pass happening invisibly inside one request.
 NAP_SECONDS = int(os.getenv("CHLOE_NAP_SECONDS", "12"))
+
+# Every visitor supplies their own session_id, so the number of live
+# sessions is set by whoever is calling rather than by how many people are
+# here. The registry below is bounded: past this many, the least recently
+# used is dropped. A dropped session costs its in-memory turn history and
+# auth state, nothing in the store, and the next message rebuilds it the
+# same way a server restart does.
+MAX_SESSIONS = int(os.getenv("CHLOE_MAX_SESSIONS", "500"))
+
+# Content-Length is whatever the caller declares, so it is checked before a
+# byte is read. A greet or chat body is a session id, a name and one line
+# bounded by MAX_INPUT_CHARS -- well inside this.
+MAX_BODY_BYTES = int(os.getenv("CHLOE_MAX_BODY_BYTES", "8192"))
+
+# What one visitor may spend in a day: chat turns, plus the greet that opens
+# a session (a greet with a name not on file writes a person row, so it is an
+# exchange too; a page reload reuses its session_id and costs nothing). 0
+# disables the budget. Health and wake polls, a visitor's own transcript, and
+# the authenticated routes are never counted.
+DAILY_EXCHANGES = int(os.getenv("CHLOE_DAILY_EXCHANGES", "20"))
+OVER_BUDGET_REPLY = "Was nice talking to you. Please come back tomorrow."
+
+# Sleeping is bounded separately and much more tightly: a nap takes the site
+# quiet for NAP_SECONDS for everybody, so it costs one of these as well as
+# one of the exchanges above. 0 disables the nap budget.
+DAILY_NAPS = int(os.getenv("CHLOE_DAILY_NAPS", "5"))
+OVER_NAP_REPLY = "I've slept enough for one day. Ask me again tomorrow."
+
+# Addresses the budget cannot use: behind the reverse proxy every request
+# arrives from loopback, and the visitor's own address is only in
+# X-Forwarded-For. Trusting that header is safe exactly because the listener
+# is not reachable except through the proxy -- keep HOST bound to localhost.
+_LOOPBACK = ("127.", "::1", "localhost")
+
+# The only files a GET can reach, and what each is served as. Adding a page
+# to the site means adding it here.
+SITE_FILES = {
+    "index.html": "text/html; charset=utf-8",
+    "beliefs.html": "text/html; charset=utf-8",
+    "chloe.css": "text/css; charset=utf-8",
+    "script.js": "application/javascript; charset=utf-8",
+    "beliefs.js": "application/javascript; charset=utf-8",
+    "chloe-favicon.png": "image/png",
+}
 
 DREAM_START = os.getenv("DREAM_START", "22:00")
 DREAM_DURATION_MINUTES = float(os.getenv("DREAM_DURATION_MINUTES", "15"))
@@ -121,7 +170,157 @@ def _next_dream_window(now: Optional[datetime] = None) -> Tuple[datetime, dateti
 # unsynchronised concurrent use, so all access below holds _store_lock.
 _store = KnowledgeStore(str(DB_PATH), check_same_thread=False)
 _store_lock = threading.Lock()
-_engines: dict[str, ChloeEngine] = {}
+
+
+class _LruTable:
+    """A dict with a ceiling, keyed by something the caller supplies.
+
+    Anything keyed by a session id or a client address is sized by whoever
+    is calling rather than by how many people are here, so the bound belongs
+    to the structure rather than to each use of it. Reading counts as use,
+    so what gets dropped is always the least recently active.
+
+    Nothing here touches the store, so this lock is always the inner one and
+    can never be held while _store_lock is taken.
+    """
+
+    def __init__(self, capacity: int, label: str):
+        self._capacity = max(1, capacity)
+        self._label = label
+        self._lock = threading.Lock()
+        self._items: "OrderedDict[str, dict]" = OrderedDict()
+
+    def get(self, key: str) -> Optional[dict]:
+        with self._lock:
+            item = self._items.get(key)
+            if item is not None:
+                self._items.move_to_end(key)
+            return item
+
+    def put(self, key: str, value: dict) -> dict:
+        with self._lock:
+            self._items[key] = value
+            self._items.move_to_end(key)
+            while len(self._items) > self._capacity:
+                dropped, _ = self._items.popitem(last=False)
+                print(f"[{self._label}] dropped {dropped[:12]} "
+                      f"({len(self._items)}/{self._capacity} held)", file=sys.stderr)
+            return value
+
+    def has(self, key: str) -> bool:
+        with self._lock:
+            return key in self._items
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+
+class _SessionRegistry:
+    """Everything held per browser session, in one place.
+
+    Two things used to be keyed by session_id independently: the engine, and
+    whether that session had asked CHLOE to sleep and was owed its questions
+    on waking. Both grew without limit, and the second was written from the
+    request thread and read from the wake poll without a lock.
+    """
+
+    def __init__(self, capacity: int):
+        self._table = _LruTable(capacity, "sessions")
+
+    def engine(self, session_id: str) -> Optional[ChloeEngine]:
+        entry = self._table.get(session_id)
+        return entry["engine"] if entry else None
+
+    def knows(self, session_id: str) -> bool:
+        return self._table.has(session_id)
+
+    def put(self, session_id: str, engine: ChloeEngine) -> None:
+        self._table.put(session_id, {"engine": engine, "owed": False, "client": None})
+
+    def set_client(self, session_id: str, client: Optional[str]) -> None:
+        """The address the turn now in flight arrived from. The engine holds
+        a nap callback that fires from inside turn(), by which point the
+        request that carried the address is no longer in view -- and the
+        address can change between turns, so capturing it when the engine is
+        built would go stale. Every turn for a session is serialised by
+        _store_lock, so at most one can be in flight here."""
+        entry = self._table.get(session_id)
+        if entry is not None:
+            entry["client"] = client
+
+    def client(self, session_id: str) -> Optional[str]:
+        entry = self._table.get(session_id)
+        return entry["client"] if entry else None
+
+    def mark_owed(self, session_id: str) -> None:
+        """This session asked CHLOE to sleep, so it is owed the questions
+        waking produces. A session dropped before it wakes is simply not
+        owed them any more."""
+        entry = self._table.get(session_id)
+        if entry is not None:
+            entry["owed"] = True
+
+    def owes_questions(self, session_id: str) -> bool:
+        entry = self._table.get(session_id)
+        return bool(entry and entry["owed"])
+
+    def clear_owed(self, session_id: str) -> None:
+        entry = self._table.get(session_id)
+        if entry is not None:
+            entry["owed"] = False
+
+
+class _DailyBudget:
+    """How much one address has spent today.
+
+    The counter table is bounded like every other client-keyed structure
+    here: past its ceiling the least recently seen address is dropped, which
+    hands that address a fresh allowance. Cycling through enough addresses to
+    cause that is already cycling through enough addresses to ignore a
+    per-address budget, so the ceiling costs nothing the budget was buying.
+    """
+
+    def __init__(self, allowance: int, label: str, capacity: int = 10000):
+        self._allowance = allowance
+        self._table = _LruTable(capacity, label)
+
+    def spend(self, client: Optional[str]) -> bool:
+        """Charge this address one exchange. False when it has none left.
+
+        An unusable address (the proxy's own, when X-Forwarded-For did not
+        arrive) is not charged: a budget that cannot tell visitors apart
+        would put every one of them in the same bucket, which is worse than
+        no budget. _warn_if_unusable says so in the log instead.
+        """
+        if self._allowance <= 0 or client is None:
+            return True
+        today = _now().date().isoformat()
+        entry = self._table.get(client)
+        if entry is None or entry["day"] != today:
+            entry = self._table.put(client, {"day": today, "spent": 0})
+        if entry["spent"] >= self._allowance:
+            return False
+        entry["spent"] += 1
+        return True
+
+
+_sessions = _SessionRegistry(MAX_SESSIONS)
+_budget = _DailyBudget(DAILY_EXCHANGES, "budget")
+_naps = _DailyBudget(DAILY_NAPS, "naps")
+_warned_no_xff = False
+
+
+def _warn_if_unusable(client: Optional[str]) -> None:
+    """Said once, not per request: a budget silently doing nothing is worse
+    than one that is off, because it looks like it is on."""
+    global _warned_no_xff
+    if client is None and DAILY_EXCHANGES > 0 and not _warned_no_xff:
+        _warned_no_xff = True
+        print("[warn] every request arrives from loopback and no X-Forwarded-For "
+              "was set, so the daily budget cannot tell visitors apart and is "
+              "not being applied. Check the reverse proxy.", file=sys.stderr)
+
 
 # Dreaming state, under its own lock so that /api/health never waits
 # behind a long-held _store_lock.
@@ -130,8 +329,6 @@ _dreaming = False
 _last_dream_summary: Optional[str] = None
 _last_dream_at: Optional[str] = None
 _next_dream_start, _dream_window_end = _next_dream_window()
-# Sessions that asked CHLOE to sleep and are owed its questions on waking.
-_woken_sessions: set = set()
 
 DREAMING_REPLY = "Zzz... Chloe is dreaming right now, consolidating what it has learned. Try again once it wakes up."
 NAP_REPLY = "I'm going to sleep for a moment. Back shortly."
@@ -190,10 +387,29 @@ def _start_nap(session_id: str) -> bool:
     end = _now() + timedelta(seconds=NAP_SECONDS)
     global _dream_window_end
     _dream_window_end = end
-    _woken_sessions.add(session_id)
+    _sessions.mark_owed(session_id)
     threading.Thread(target=_run_dream_window, args=(end,),
                      name="chloe-nap", daemon=True).start()
     return True
+
+
+def _nap_reply(session_id: str) -> str:
+    """What CHLOE says when asked to sleep: the one place the answer is
+    decided, so the reason is never inferred from a bare False.
+
+    A nap is charged to the address that asked for it, apart from the
+    exchange the same turn already cost. Losing the race to the scheduler
+    after being charged spends one of the day's naps on a sleep that was
+    already happening -- rare, and cheaper than holding the nap budget
+    inside the dream lock to prevent it.
+    """
+    if _is_dreaming():
+        return DREAMING_REPLY
+    if not _naps.spend(_sessions.client(session_id)):
+        return OVER_NAP_REPLY
+    if not _start_nap(session_id):
+        return DREAMING_REPLY
+    return NAP_REPLY
 
 
 def _dream_scheduler() -> None:
@@ -224,16 +440,16 @@ def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Option
     find the engine already there and do not re-run greet(), which would
     re-trigger the secret-word exchange on every page reload.
     """
-    engine = _engines.get(session_id)
+    engine = _sessions.engine(session_id)
     if engine is not None:
         return engine, None
     # "Sleep, Chloe" starts the dream window rather than the engine's own
     # synchronous sleep(), so the site visibly goes quiet and the questions
     # are put on waking. It still goes through engine.turn(), and is logged
     # like any other turn.
-    engine = ChloeEngine(_store, nap=lambda: NAP_REPLY if _start_nap(session_id) else DREAMING_REPLY)
+    engine = ChloeEngine(_store, nap=lambda: _nap_reply(session_id))
     reply = engine.greet(name)
-    _engines[session_id] = engine
+    _sessions.put(session_id, engine)
     return engine, reply
 
 
@@ -284,7 +500,7 @@ def collect_transcript(session_id: str, name: str) -> dict:
     """Caller must hold _store_lock. One visitor's logged conversation, plus
     the beliefs their turns produced -- the provenance record, not the
     browser's copy of the chat log, so it survives a page reload."""
-    engine = _engines.get(session_id)
+    engine = _sessions.engine(session_id)
     person = engine.person if engine and engine.person else _store.find_person_by_name(name or "")
     if person is None:
         return {"person": None, "turns": [], "beliefs": [], "open_questions": []}
@@ -324,18 +540,18 @@ def handle_wake(session_id: str, name: str) -> dict:
     """
     # Still asleep: say nothing and keep the session on the list, so an
     # early poll can't consume the offer before it has actually woken.
-    if _is_dreaming() or session_id not in _woken_sessions:
+    if _is_dreaming() or not _sessions.owes_questions(session_id):
         return {"session_id": session_id, "reply": None}
-    _woken_sessions.discard(session_id)
+    _sessions.clear_owed(session_id)
     with _store_lock:
-        engine = _engines.get(session_id)
+        engine = _sessions.engine(session_id)
         if engine is None or engine.person is None:
             return {"session_id": session_id, "reply": None}
         offer = engine.wake()
     return {"session_id": session_id, "reply": offer}
 
 
-def handle_greet(payload: dict) -> dict:
+def handle_greet(payload: dict, client: Optional[str] = None) -> dict:
     """Explicit first-contact step: the website asks a visitor's real
     name before starting the chat proper (see script.js), and this is what
     turns that name into a genuine ChloeEngine.greet() call -- as opposed
@@ -349,8 +565,14 @@ def handle_greet(payload: dict) -> dict:
     if not name:
         return {"session_id": session_id, "reply": "I didn't catch a name -- what should I call you?"}
 
+    if not _sessions.knows(session_id) and not _budget.spend(client):
+        # Opening a session with a name not on file writes a person row, so
+        # it is charged. A reload carries its session_id and is not.
+        return {"session_id": session_id, "reply": OVER_BUDGET_REPLY,
+                "budget_exhausted": True}
+
     with _store_lock:
-        already_had_engine = session_id in _engines
+        already_had_engine = _sessions.knows(session_id)
         engine, reply = _get_or_init_engine(session_id, name)
         if reply is None:
             # Same session already greeted (e.g. the page was reloaded) --
@@ -360,7 +582,7 @@ def handle_greet(payload: dict) -> dict:
     return {"session_id": session_id, "reply": reply, "already_greeted": already_had_engine}
 
 
-def handle_chat(payload: dict) -> dict:
+def handle_chat(payload: dict, client: Optional[str] = None) -> dict:
     session_id = str(payload.get("session_id") or uuid.uuid4())
     message = (payload.get("message") or "").strip()
     name = (payload.get("name") or "").strip()
@@ -369,12 +591,17 @@ def handle_chat(payload: dict) -> dict:
     if not message:
         return {"session_id": session_id, "reply": "Say something and I'll respond.", "llm_used": False}
 
+    if not _budget.spend(client):
+        return {"session_id": session_id, "reply": OVER_BUDGET_REPLY,
+                "budget_exhausted": True, "llm_used": False}
+
     with _store_lock:
         # /api/greet normally creates the engine before any chat message
         # arrives. This is the safety net for when it has not -- a server
-        # restart mid-session wipes the in-memory _engines dict -- so chat
+        # restart, or an eviction, drops the in-memory engine -- so chat
         # does not hard-fail just because greet was not replayed.
         engine, _ = _get_or_init_engine(session_id, name or f"guest-{session_id[:8]}")
+        _sessions.set_client(session_id, client)
         ground_truth = engine.turn(message)
         # Read inside the lock: it belongs to the turn just taken.
         stance = engine.last_stance
@@ -434,18 +661,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_file(self, rel_path: str):
-        path = (SITE_DIR / rel_path).resolve()
-        if SITE_DIR not in path.parents and path != SITE_DIR:
-            self.send_error(403)
+        """Serve one of the site's own files, named in SITE_FILES.
+
+        The rule is the table rather than the directory: SITE_DIR is the
+        folder the server runs from, which holds the engine, the knowledge
+        store and whatever else lives beside them, so "any regular file
+        under SITE_DIR" is the wrong permission to hand a GET. A name is
+        either the site's or it is not, and an unlisted one does not exist.
+        """
+        ctype = SITE_FILES.get(rel_path)
+        if ctype is None:
+            self.send_error(404)
             return
+        path = SITE_DIR / rel_path
         if not path.is_file():
             self.send_error(404)
             return
-        ctype = {
-            ".html": "text/html; charset=utf-8",
-            ".css": "text/css; charset=utf-8",
-            ".js": "application/javascript; charset=utf-8",
-        }.get(path.suffix, "application/octet-stream")
         data = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -455,6 +686,46 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
+
+    def _client_key(self) -> Optional[str]:
+        """The visitor's own address, or None when it cannot be known.
+
+        Apache appends the address it observed to X-Forwarded-For, so the
+        last entry is the one it saw and the only one a caller cannot
+        forge -- anything a caller puts in the header is pushed left of it.
+        With no header and a loopback peer we are behind the proxy and
+        blind, which None says plainly rather than lumping every visitor
+        under the proxy's address.
+        """
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+            if hops:
+                return hops[-1]
+        peer = self.client_address[0] if self.client_address else ""
+        if not peer or peer.startswith(_LOOPBACK):
+            return None
+        return peer
+
+    def _read_json_body(self) -> Optional[dict]:
+        """The JSON body of this request, or None when this has already
+        answered the caller. The declared length is checked before a byte is
+        read: Content-Length is supplied by whoever is calling, and reading
+        it blindly is how one request becomes a memory problem."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._send_json(400, {"error": "invalid Content-Length"})
+            return None
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._send_json(413, {"error": f"body may not exceed {MAX_BODY_BYTES} bytes"})
+            return None
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(400, {"error": "invalid JSON body"})
+            return None
 
     def _beliefs_authorised(self) -> bool:
         """Constant-time check of the Basic credentials. Returns False and
@@ -531,15 +802,16 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            self._send_json(400, {"error": "invalid JSON body"})
+        payload = self._read_json_body()
+        if payload is None:
             return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "expected a JSON object"})
+            return
+        client = self._client_key()
+        _warn_if_unusable(client)
         try:
-            result = handler(payload)
+            result = handler(payload, client)
         except Exception as e:  # keep the site up even if something breaks
             print(f"[error] {self.path} failed: {e}", file=sys.stderr)
             self._send_json(500, {"error": "internal error"})
@@ -560,6 +832,12 @@ def run():
     window_end_clock = _dream_window_end.strftime("%H:%M")
     print(f"CHLOE dreams daily {DREAM_START}-{window_end_clock} ({DREAM_TZ or 'server local time'}); "
           f"next window starts {_next_dream_start.isoformat()}", file=sys.stderr)
+    if DAILY_EXCHANGES > 0:
+        naps = f"{DAILY_NAPS} of them sleeps" if DAILY_NAPS > 0 else "sleeps unlimited"
+        print(f"Daily budget: {DAILY_EXCHANGES} exchanges per address, {naps} "
+              f"(set CHLOE_DAILY_EXCHANGES=0 to disable).", file=sys.stderr)
+    else:
+        print("[warn] CHLOE_DAILY_EXCHANGES is 0 -- no per-address limit.", file=sys.stderr)
     if BELIEFS_PASSWORD:
         print(f"Belief browser at /beliefs (user {BELIEFS_USER!r}); "
               f"put it behind HTTPS -- basic auth is not encrypted.", file=sys.stderr)
