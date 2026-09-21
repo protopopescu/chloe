@@ -34,6 +34,21 @@ _REPLY_WORDS = {
 }
 
 
+# How many beliefs a wh-answer names before the remainder is counted.
+WH_ANSWER_LIMIT = 3
+
+# How many entries the two reports list.
+KNOWLEDGE_REPORT_LIMIT = 5
+TRUST_REPORT_LIMIT = 5
+
+
+def _join(items: list) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(items) < 3:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def _reply_word(text: str) -> Optional[str]:
     """'yes', 'no' or 'stop' if that is all the line says, else None."""
     low = text.strip().lower().rstrip(".!?").strip()
@@ -493,14 +508,22 @@ class ChloeEngine:
             people = self.store.all_people()
             if not people:
                 return "I don't have any trust profiles yet."
-            lines = [f"{p.name}: {p.trust_in():.2f}" for p in people]
-            return "Here's what I've got: " + "; ".join(lines)
+            people.sort(key=lambda p: (-p.trust_in(), p.name.lower()))
+            shown = people[:TRUST_REPORT_LIMIT]
+            lines = [f"{p.name}: {p.trust_in():.2f}" for p in shown]
+            opener = ("Here's who I trust most: " if len(people) > len(shown)
+                      else "Here's who I trust: ")
+            return opener + "; ".join(lines)
         if cmd == "knowledge_report":
             atoms = self.store.all_atoms()
             if not atoms:
                 return "I don't know anything yet."
-            lines = [f"{a.statement()} [{a.status.value}, conf={a.confidence:.2f}]" for a in atoms]
-            return "Here's what I know: " + " | ".join(lines)
+            atoms.sort(key=lambda a: (a.confidence, a.id or 0), reverse=True)
+            shown = atoms[:KNOWLEDGE_REPORT_LIMIT]
+            lines = [f"{a.statement()} [{a.status.value}, conf={a.confidence:.2f}]" for a in shown]
+            opener = ("Here are a few things I know: " if len(atoms) > len(shown)
+                      else "Here's what I know: ")
+            return opener + " | ".join(lines)
         if cmd == "open_questions":
             qs = self.store.pending_questions()
             if not qs:
@@ -665,9 +688,25 @@ class ChloeEngine:
             else:
                 known = "I don't know yet"
             return f"{known} -- {self._ask_wh(utt.subject, wh)}?"
-        best = max(candidates, key=lambda a: a.confidence)
-        clause = self._say(best.subject, best.relation, best.object)
-        return f"{grammar.capitalise(clause)} (confidence {best.confidence:.2f})."
+        candidates.sort(key=lambda a: (a.confidence, a.id or 0), reverse=True)
+        best, rest = candidates[0], candidates[1:]
+        reply = f"{grammar.capitalise(self._say_atom(best))} (confidence {best.confidence:.2f})."
+        if rest:
+            reply += " " + self._also(utt.subject, rest)
+        return reply
+
+    def _also(self, subject: str, atoms: list) -> str:
+        """The rest of what is held about the subject, named as far as
+        WH_ANSWER_LIMIT allows and counted beyond it."""
+        speaker = self.person.name if self.person else ""
+        subj = grammar.swap_pronoun(subject, speaker)
+        said = [grammar.predicate(a.relation, a.object, a.scope, speaker, subj)
+                for a in atoms[:WH_ANSWER_LIMIT - 1]]
+        reply = f"I also know that {subj} {_join(said)}"
+        held = len(atoms) - len(said)
+        if held:
+            reply += f", and {held} more thing{'s' if held > 1 else ''} about {subj}"
+        return reply + "."
 
     # ------------------------------------------------------------- internals
     def _atom_for(self, subject: str, relation: str, obj: str, scope: str) -> Optional[Atom]:

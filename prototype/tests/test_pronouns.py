@@ -47,6 +47,10 @@ class GrammarUnitTests(unittest.TestCase):
         self.assertEqual(grammar.accord_verb("is", "I"), "am")
         self.assertEqual(grammar.accord_verb("is", "Felix"), "is")
         self.assertEqual(grammar.accord_verb("likes", "Felix"), "likes")
+        # Only the third person is marked, so agreement drops the -s.
+        self.assertEqual(grammar.accord_verb("likes", "you"), "like")
+        self.assertEqual(grammar.accord_verb("has", "I"), "have")
+        self.assertEqual(grammar.accord_verb("was", "you"), "were")
 
     def test_clause_agrees(self):
         self.assertEqual(grammar.clause("Dan", "is", "a person", speaker="Dan"),

@@ -138,23 +138,38 @@ def same_referent(a: str, b: str) -> bool:
     return bool(a) and bool(b) and a.strip().lower() == b.strip().lower()
 
 
+_COPULA_PRESENT = {"is", "are", "am"}
+_COPULA_PAST = {"was", "were"}
+
+
 def accord_verb(verb: str, pronoun: str) -> str:
-    """cGrammar.hh AccordTheVerb(): agree a copula with the pronoun in front
-    of it. Anything that is not a first/second-person pronoun keeps the verb
-    as stored."""
+    """cGrammar.hh AccordTheVerb(): agree a verb with the pronoun in front of
+    it. A copula takes that person's form and keeps its tense. Any other verb
+    is marked only for the third person. Anything that is not a
+    first/second-person pronoun keeps the verb as stored."""
     low = (pronoun or "").strip().lower()
-    if low == "you":
-        return "are"
-    if low == "i":
-        return "am"
-    return verb
+    if low not in ("you", "i"):
+        return verb
+    stem = verb.strip().lower()
+    if stem in _COPULA_PRESENT:
+        return "are" if low == "you" else "am"
+    if stem in _COPULA_PAST:
+        return "were" if low == "you" else "was"
+    return _lemma(stem)
 
 
 def clause(subject: str, relation: str, obj: str, scope: str = "", speaker: str = "") -> str:
     """Render a stored triple for the person being spoken to."""
     subj = swap_pronoun(subject, speaker)
-    rel = accord_verb(relation, subj)
-    text = f"{subj} {rel} {swap_pronouns_in(obj, speaker)}"
+    return f"{subj} {predicate(relation, obj, scope, speaker, subj)}"
+
+
+def predicate(relation: str, obj: str, scope: str = "", speaker: str = "",
+              subject_pronoun: str = "") -> str:
+    """The part of a clause after its subject. The verb agrees with
+    `subject_pronoun`, the subject as swap_pronoun() has already rendered
+    it."""
+    text = f"{accord_verb(relation, subject_pronoun)} {swap_pronouns_in(obj, speaker)}"
     if scope:
         text += f" ({swap_pronouns_in(scope, speaker)})"
     return text
