@@ -21,7 +21,7 @@ provenance. The architecture was revived and implemented in 2026, once
 LLMs had solved the language problem the original attempt foundered on.
 
 This repository accompanies the paper *CHLOE: A Persistent Epistemic Architecture for Inspectable AI*
-(D. Protopopescu, 2026 — arXiv link to follow).
+(D. Protopopescu, 2026), <https://doi.org/10.5281/zenodo.22862833>.
 
 ## Layout
 

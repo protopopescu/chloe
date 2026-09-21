@@ -5,6 +5,8 @@ abstract: "CHLOE (Computer-Human Language Oriented Experiment) is a persistent e
 authors:
   - family-names: Protopopescu
     given-names: Dan
+    orcid: "https://orcid.org/0000-0002-8047-6513"
+    affiliation: "University of Glasgow"
 repository-code: "https://github.com/protopopescu/chloe"
 license: Apache-2.0
 preferred-citation:
@@ -13,5 +15,12 @@ preferred-citation:
   authors:
     - family-names: Protopopescu
       given-names: Dan
+      orcid: "https://orcid.org/0000-0002-8047-6513"
+      affiliation: "University of Glasgow"
   year: 2026
-  notes: "arXiv identifier to be added on publication."
+  month: 9
+  publisher:
+    name: Zenodo
+  doi: "10.5281/zenodo.22862833"
+  url: "https://doi.org/10.5281/zenodo.22862833"
+  notes: "Preprint."
