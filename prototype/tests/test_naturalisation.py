@@ -150,12 +150,13 @@ class RejectionTests(unittest.TestCase):
 
     def test_short_messages_do_not_trigger_the_echo_test(self):
         # "Noted..." begins with "no"; "Yesterday..." begins with "yes"
-        self.assertIsNone(self._reason("Noted, thanks for telling me.", message="no"))
-        self.assertIsNone(self._reason("Yesterday you said otherwise.", message="yes"))
+        self.assertIsNone(self._reason("Noted, thanks for telling me about Claire.", message="no"))
+        self.assertIsNone(self._reason("Yesterday you said otherwise about Claire.", message="yes"))
 
     def test_echo_needs_a_word_boundary(self):
         # the reply merely starts with a longer word, not a repetition
-        self.assertIsNone(self._reason("Greenhouses are warm indeed.", message="greenhouse"))
+        self.assertIsNone(self._reason("Greenhouses are warm indeed, and Claire comes first.",
+                                       message="greenhouse"))
 
     def test_every_marker_is_caught(self):
         for marker in persona.SCAFFOLD_MARKERS:
@@ -243,6 +244,93 @@ class EngineStanceTests(unittest.TestCase):
         self.dan.turn("Is Hector a dog?")
         self.dan.turn("Claire is an artist")
         self.assertIsNone(self.dan.last_stance, "a stale stance must not carry over")
+
+
+class NothingLeftOutTests(unittest.TestCase):
+    """A phrasing may reword what the core decided, but not drop it."""
+
+    AGREED = "Good, that matches what I already believed: Humuhumunukunukapuaa is a fish."
+
+    def test_a_reply_that_drops_what_was_decided_is_rejected(self):
+        gt = self.AGREED + " That's everything I had -- thank you."
+        reason = persona.rejection_reason(
+            "You're welcome. If you have any other questions, feel free to ask.", "yes", gt)
+        self.assertIn("left out", reason)
+        self.assertIn("humuhumunukunukapuaa", reason)
+
+    def test_a_name_after_the_cores_colon_counts(self):
+        gt = "Good, that matches what I already believed: Hector is a cat."
+        self.assertIn("left out", persona.rejection_reason("Good, that matches what I believed.",
+                                                           "yes", gt))
+
+    def test_a_question_turned_into_a_conclusion_is_rejected(self):
+        # What the model was given to phrase, once the question is kept out
+        # of its hands, no longer contains the question's subject at all.
+        gt = "Good, that matches what I already believed: Hector is a cat."
+        self.assertIsNotNone(persona.rejection_reason(
+            "I see, that means Humuhumunukunukapuaa is still considered a fish by you.", "yes", gt))
+
+    def test_a_rewording_that_keeps_everything_passes(self):
+        self.assertIsNone(persona.rejection_reason(
+            "That fits with what I had: Humuhumunukunukapuaa is a fish.", "yes", self.AGREED))
+
+    def test_a_number_may_be_left_out_but_not_a_name(self):
+        gt = "Bob's cat is called Hector (confidence 0.79)."
+        self.assertIsNone(persona.rejection_reason("Bob's cat is called Hector.", "?", gt))
+        self.assertIsNotNone(persona.rejection_reason("Bob's cat has a name.", "?", gt))
+
+
+class QuestionKeptTests(unittest.TestCase):
+    ASK = "This has only ever come from one person. I've been told that Humuhumunukunukapuaa is a fish. Is that right?"
+
+    def test_the_question_is_split_off_unphrased(self):
+        head = "Good, that matches what I already believed: Hector is a cat."
+        self.assertEqual(persona.question_to_keep(f"{head}\n{self.ASK}", self.ASK), (head, self.ASK))
+
+    def test_a_reply_that_is_only_a_question_has_nothing_to_phrase(self):
+        self.assertEqual(persona.question_to_keep(self.ASK, self.ASK), ("", self.ASK))
+
+    def test_no_question_means_everything_may_be_phrased(self):
+        self.assertEqual(persona.question_to_keep("Okay.", None), ("Okay.", ""))
+
+    def test_a_split_that_does_not_fit_phrases_nothing(self):
+        self.assertEqual(persona.question_to_keep("Something else entirely.", self.ASK),
+                         ("", "Something else entirely."))
+
+
+class EngineQuestionTests(unittest.TestCase):
+    """Where the question the server keeps out of the model's hands comes from."""
+
+    def setUp(self):
+        self.store = KnowledgeStore(":memory:")
+        for line in ["Hector is a cat", "Humuhumunukunukapuaa is a fish"]:
+            ben = ChloeEngine(self.store)
+            ben.greet("Ben")
+            ben.turn("no")
+            ben.turn(line)
+        ben.turn("Sleep")
+        self.eve = ChloeEngine(self.store)
+        self.eve.greet("Eve")
+        self.eve.turn("no")
+        self.eve.offer_questions()
+
+    def test_the_first_question_is_the_whole_reply(self):
+        reply = self.eve.turn("yes")
+        self.assertEqual(reply, self.eve.last_question)
+
+    def test_an_answer_carries_the_next_question_last(self):
+        self.eve.turn("yes")
+        reply = self.eve.turn("yes")
+        self.assertTrue(self.eve.last_question)
+        self.assertTrue(reply.endswith(self.eve.last_question))
+        head, kept = persona.question_to_keep(reply, self.eve.last_question)
+        self.assertTrue(head.startswith("Good"))
+        self.assertTrue(kept.endswith("?"))
+
+    def test_a_turn_that_asks_nothing_carries_no_question(self):
+        self.eve.turn("yes")
+        self.eve.turn("stop")
+        self.assertIsNone(self.eve.last_question, "a stale question must not carry over")
 
 
 if __name__ == "__main__":

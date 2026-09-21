@@ -55,11 +55,10 @@ SITE_DIR = Path(__file__).resolve().parent
 PROTOTYPE_DIR = SITE_DIR.parent / "prototype"
 sys.path.insert(0, str(PROTOTYPE_DIR))
 
-from chloe import consolidation, llm_client, persona  # noqa: E402
+from chloe import consolidation, llm_client, persona, questions  # noqa: E402
 from chloe.dialogue import CONVERSATION_ROLES, ChloeEngine  # noqa: E402
-from chloe.nlu import COMMANDS, _strip_punct, _strip_vocative  # noqa: E402
+from chloe.nlu import MAX_INPUT_CHARS  # noqa: E402
 from chloe.storage import KnowledgeStore  # noqa: E402
-
 DB_PATH = SITE_DIR / "uni_chat.db"
 PORT = int(os.getenv("PORT", "5010"))
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -135,6 +134,7 @@ _next_dream_start, _dream_window_end = _next_dream_window()
 _woken_sessions: set = set()
 
 DREAMING_REPLY = "Zzz... Chloe is dreaming right now, consolidating what it has learned. Try again once it wakes up."
+NAP_REPLY = "I'm going to sleep for a moment. Back shortly."
 
 
 def _is_dreaming() -> bool:
@@ -177,13 +177,6 @@ def _run_dream_window(end: datetime) -> None:
         _last_dream_summary = summary
         _last_dream_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     print(f"[dream] Chloe woke up: {summary}", file=sys.stderr)
-
-
-def _is_sleep_command(message: str) -> bool:
-    """Exactly the engine's own command table, so "Sleep, Chloe" means here
-    what it means there and the two can never drift apart."""
-    key = _strip_punct(_strip_vocative(message)).lower()
-    return COMMANDS.get(key) == "sleep"
 
 
 def _start_nap(session_id: str) -> bool:
@@ -234,17 +227,40 @@ def _get_or_init_engine(session_id: str, name: str) -> tuple[ChloeEngine, Option
     engine = _engines.get(session_id)
     if engine is not None:
         return engine, None
-    engine = ChloeEngine(_store)
+    # "Sleep, Chloe" starts the dream window rather than the engine's own
+    # synchronous sleep(), so the site visibly goes quiet and the questions
+    # are put on waking. It still goes through engine.turn(), and is logged
+    # like any other turn.
+    engine = ChloeEngine(_store, nap=lambda: NAP_REPLY if _start_nap(session_id) else DREAMING_REPLY)
     reply = engine.greet(name)
     _engines[session_id] = engine
     return engine, reply
+
+
+def _evidence_row(p, people: dict) -> dict:
+    """Caller must hold _store_lock. One piece of evidence, as the belief
+    browser and the transcript show it. `note` says where evidence carried
+    from another belief came from, and why a voided one no longer counts."""
+    via = _store.atom_by_id(p.via_atom_id) if p.via_atom_id else None
+    note = None
+    if p.void:
+        note = f"withdrawn: compatible with '{via.statement()}'" if via else "withdrawn: the belief it came from was removed"
+    elif via is not None:
+        note = f"via '{via.statement()}'"
+    return {
+        "person": people[p.person_id].name if p.person_id in people else f"#{p.person_id}",
+        "effect": {1: "supports", -1: "disputes"}.get(p.polarity, str(p.polarity)),
+        "at": p.at,
+        "parse_confidence": p.parse_confidence,
+        "void": p.void,
+        "note": note,
+    }
 
 
 def collect_beliefs() -> dict:
     """Caller must hold _store_lock. The store as it stands, with the
     evidence behind each belief resolved to names."""
     people = {p.id: p for p in _store.all_people()}
-    effect = {1: "supports", -1: "disputes"}
     beliefs = []
     for atom in sorted(_store.all_atoms(), key=lambda a: (-a.confidence, a.subject.lower())):
         beliefs.append({
@@ -254,18 +270,13 @@ def collect_beliefs() -> dict:
             "scope": atom.scope, "domain": atom.domain,
             "status": atom.status.value, "confidence": round(atom.confidence, 3),
             "created_at": atom.created_at, "updated_at": atom.updated_at,
-            "evidence": [{
-                "person": people[p.person_id].name if p.person_id in people else f"#{p.person_id}",
-                "effect": effect.get(p.polarity, str(p.polarity)),
-                "at": p.at,
-                "parse_confidence": p.parse_confidence,
-            } for p in atom.provenance],
+            "evidence": [_evidence_row(p, people) for p in atom.provenance],
         })
     return {
         "beliefs": beliefs,
         "people": [{"name": p.name, "trust": p.trust} for p in people.values()],
-        "open_questions": [{"question": q["question"], "reason": q["reason"]}
-                           for q in _store.pending_questions()],
+        "open_questions": [{"question": questions.render(_store, q), "reason": q["reason"]}
+                           for q in _store.pending_questions() if questions.still_open(_store, q)],
     }
 
 
@@ -279,7 +290,6 @@ def collect_transcript(session_id: str, name: str) -> dict:
         return {"person": None, "turns": [], "beliefs": [], "open_questions": []}
 
     people = {p.id: p for p in _store.all_people()}
-    effect = {1: "supports", -1: "disputes"}
     mine = []
     for atom in _store.all_atoms():
         if not any(p.person_id == person.id for p in atom.provenance):
@@ -288,12 +298,7 @@ def collect_transcript(session_id: str, name: str) -> dict:
             "statement": atom.statement(),
             "status": atom.status.value,
             "confidence": round(atom.confidence, 3),
-            "evidence": [{
-                "person": people[p.person_id].name if p.person_id in people else f"#{p.person_id}",
-                "effect": effect.get(p.polarity, str(p.polarity)),
-                "at": p.at,
-                "parse_confidence": p.parse_confidence,
-            } for p in atom.provenance],
+            "evidence": [_evidence_row(p, people) for p in atom.provenance],
         })
     return {
         "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -302,8 +307,10 @@ def collect_transcript(session_id: str, name: str) -> dict:
                   for i in _store.interactions_for_person(person.id)
                   if i.role in CONVERSATION_ROLES],
         "beliefs": mine,
-        "open_questions": [{"question": q["question"], "reason": q["reason"]}
-                           for q in _store.pending_questions()],
+        # What CHLOE would ask this person now, worded as it would put it.
+        "open_questions": [{"question": questions.render(_store, q, person), "reason": q["reason"]}
+                           for q in _store.pending_questions()
+                           if questions.still_open(_store, q) and questions.for_person(_store, q, person)],
     }
 
 
@@ -324,8 +331,7 @@ def handle_wake(session_id: str, name: str) -> dict:
         engine = _engines.get(session_id)
         if engine is None or engine.person is None:
             return {"session_id": session_id, "reply": None}
-        engine._questions_declined = False
-        offer = engine.offer_questions()
+        offer = engine.wake()
     return {"session_id": session_id, "reply": offer}
 
 
@@ -363,17 +369,6 @@ def handle_chat(payload: dict) -> dict:
     if not message:
         return {"session_id": session_id, "reply": "Say something and I'll respond.", "llm_used": False}
 
-    if _is_sleep_command(message):
-        # The engine's own sleep() would consolidate inside this request and
-        # return instantly; routing it through the dream window instead makes
-        # the site actually go quiet, and the questions are put on waking.
-        with _store_lock:
-            _get_or_init_engine(session_id, name or f"guest-{session_id[:8]}")
-        if _start_nap(session_id):
-            return {"session_id": session_id, "llm_used": False, "dreaming": True,
-                    "reply": "I'm going to sleep for a moment. Back shortly."}
-        return {"session_id": session_id, "reply": DREAMING_REPLY, "dreaming": True, "llm_used": False}
-
     with _store_lock:
         # /api/greet normally creates the engine before any chat message
         # arrives. This is the safety net for when it has not -- a server
@@ -383,33 +378,48 @@ def handle_chat(payload: dict) -> dict:
         ground_truth = engine.turn(message)
         # Read inside the lock: it belongs to the turn just taken.
         stance = engine.last_stance
+        question = engine.last_question
 
-    reply = ground_truth
+    if _is_dreaming():
+        # The turn put CHLOE to sleep: said as it stands, and the browser
+        # shows the sleeping state.
+        return {"session_id": session_id, "reply": ground_truth, "dreaming": True, "llm_used": False}
+
+    # A question CHLOE has just put goes out in the core's words: the
+    # person's next "yes" or "no" is recorded against it, so it must reach
+    # them as the question it is. Only what comes before it is phrased.
+    to_phrase, kept = persona.question_to_keep(ground_truth, question)
+    phrased = to_phrase
     llm_used = False
     rejected = None
-    if llm_client.is_configured():
-        messages = persona.naturalise_request(message, ground_truth)
+    # The output interface is held to the input interface's length limit as
+    # well: naturalise_request puts the person's own message in the user
+    # turn, so phrasing a reply to a line the parser refused unread would
+    # hand the model the very text the limit exists to keep from it. The
+    # engine's refusal goes out as it stands.
+    if to_phrase and llm_client.is_configured() and len(message) <= MAX_INPUT_CHARS:
+        messages = persona.naturalise_request(message, to_phrase)
         try:
             candidate = llm_client.chat(
                 messages, temperature=persona.NATURALISE_TEMPERATURE)
             # The model's licence is linguistic, not epistemic. A reply that
             # repeats the instructions, echoes the person, swaps the
-            # speakers, supplies a name or number of its own, answers a
-            # yes/no question the other way from the core, or runs away is
-            # dropped for the engine's own text -- the same fallback as an
-            # unreachable server.
-            rejected = persona.rejection_reason(candidate, message, ground_truth,
+            # speakers, supplies a name or number of its own or leaves out
+            # one the core gave, answers a yes/no question the other way
+            # from the core, or runs away is dropped for the engine's own
+            # text -- the same fallback as an unreachable server.
+            rejected = persona.rejection_reason(candidate, message, to_phrase,
                                                 stance=stance)
             if rejected:
                 print(f"[naturalisation rejected] {rejected}: {candidate[:160]!r}",
                       file=sys.stderr)
             else:
-                reply = candidate
+                phrased = candidate.strip()
                 llm_used = True
         except llm_client.LLMUnavailable as e:
             print(f"[warn] vLLM unavailable, falling back to engine reply: {e}", file=sys.stderr)
-            reply = ground_truth
 
+    reply = "\n".join(part for part in (phrased, kept) if part)
     return {"session_id": session_id, "reply": reply, "engine_reply": ground_truth,
             "llm_used": llm_used, "naturalisation_rejected": rejected}
 
@@ -473,7 +483,8 @@ class Handler(BaseHTTPRequestHandler):
         route = self.path.split("?", 1)[0]
 
         if route == "/api/health":
-            payload = {"ok": True, "vllm_configured": llm_client.is_configured()}
+            payload = {"ok": True, "vllm_configured": llm_client.is_configured(),
+                       "max_input_chars": MAX_INPUT_CHARS}
             payload.update(_dream_status())
             self._send_json(200, payload)
             return

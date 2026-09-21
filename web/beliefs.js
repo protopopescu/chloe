@@ -41,7 +41,8 @@ function renderBeliefs(beliefs) {
         ? '' : ` · parse ${e.parse_confidence.toFixed(2)}`;
       const li = el('li', 'belief-' + e.effect);
       li.appendChild(el('strong', null, e.person));
-      li.appendChild(document.createTextNode(` ${e.effect} it · ${e.at}${parse}`));
+      const note = e.note ? ` · ${e.note}` : '';
+      li.appendChild(document.createTextNode(` ${e.effect} it · ${e.at}${parse}${note}`));
       list.appendChild(li);
     }
     card.appendChild(list);

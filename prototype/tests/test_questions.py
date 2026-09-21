@@ -12,8 +12,9 @@ import os
 import tempfile
 import unittest
 
-from chloe.dialogue import ChloeEngine, QuestionState, YES_NO_REASONS
-from chloe.models import RelationProperties
+from chloe import questions
+from chloe.dialogue import ChloeEngine, QuestionState
+from chloe.models import AtomStatus, RelationProperties
 from chloe.nlu import parse
 from chloe.storage import KnowledgeStore
 
@@ -79,7 +80,7 @@ class QuestionModeTests(unittest.TestCase):
         self.dan.turn("Sleep, Chloe")
         asked = self.dan.turn("yes")
         while self.dan._current_question and \
-                self.dan._current_question["reason"] not in YES_NO_REASONS:
+                questions.kind_of(self.dan._current_question) != questions.Kind.CONFIRM:
             asked = self.dan.turn("the sky is blue")
         return asked
 
@@ -89,7 +90,7 @@ class QuestionModeTests(unittest.TestCase):
         before = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
         reply = self.dan.turn("yes")
         after = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
-        self.assertIn("that supports", reply)
+        self.assertIn("Good", reply)
         self.assertGreater(after.confidence, before.confidence)
         self.assertEqual(len(after.provenance), len(before.provenance) + 1)
 
@@ -99,7 +100,7 @@ class QuestionModeTests(unittest.TestCase):
         before = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
         reply = self.dan.turn("no")
         after = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
-        self.assertIn("disputing", reply)
+        self.assertIn("think again", reply)
         self.assertLess(after.confidence, before.confidence)
 
     def test_answered_questions_do_not_come_back(self):
@@ -110,11 +111,12 @@ class QuestionModeTests(unittest.TestCase):
 
     def test_an_open_question_is_answered_by_a_statement(self):
         self._contradict()
-        self.dan.turn("Sleep, Chloe")
-        first = self.dan.turn("yes")
+        eve = self._person("Eve")          # has said nothing about the sky
+        eve.turn("Sleep, Chloe")
+        first = eve.turn("yes")
         self.assertIn("which is it?", first)
-        qid = self.dan._current_question["id"]
-        reply = self.dan.turn("the sky is blue")
+        qid = eve._current_question["id"]
+        reply = eve.turn("the sky is blue")
         self.assertIn("matches what I already believed", reply)
         self.assertNotIn(qid, [q["id"] for q in self.store.pending_questions()])
 
@@ -129,7 +131,7 @@ class QuestionModeTests(unittest.TestCase):
         before = atom.confidence
         reply = self.dan.turn(f"{atom.subject} {atom.relation} {atom.object}")
         after = [a for a in self.store.all_atoms() if a.id == q["related_atom_id"]][0]
-        self.assertIn("matches what I already believed", reply)
+        self.assertIn("worked that out myself", reply)
         self.assertGreater(after.confidence, before)
         self.assertNotIn(q["id"], [p["id"] for p in self.store.pending_questions()])
         self.assertFalse(self.dan._questions_declined, "answering is not declining")
@@ -177,6 +179,146 @@ class QuestionModeTests(unittest.TestCase):
             counts[q["question"]] = counts.get(q["question"], 0) + 1
         self.assertTrue(all(n == 1 for n in counts.values()), counts)
         self.assertGreaterEqual(len(self.store.pending_questions()), before)
+
+
+class OnTheTableTests(unittest.TestCase):
+    """A reply is read against the question it answers; a question is
+    checked and worded when it is asked, for the person it is put to."""
+
+    def setUp(self):
+        self.store = KnowledgeStore(":memory:")
+
+    def _person(self, name):
+        e = ChloeEngine(self.store)
+        e.greet(name)
+        e.turn("no")
+        return e
+
+    def _asked(self, engine):
+        """Consent, and return the first question put."""
+        self.assertIsNotNone(engine.offer_questions())
+        return engine.turn("yes")
+
+    def _conflict(self):
+        self._person("Dario").turn("Hector is a dog")
+        self._person("Bob").turn("Hector is a cat")
+
+    # ------------------------------------------------------- reply words
+    def test_a_bare_yes_does_not_answer_which_is_it(self):
+        self._conflict()
+        eve = self._person("Eve")
+        self.assertIn("which is it?", self._asked(eve))
+        atoms_before = len(self.store.all_atoms())
+        qid = eve._current_question["id"]
+        reply = eve.turn("yes")
+        self.assertIn("more than a yes or no", reply)
+        self.assertIn("a dog or a cat", reply)
+        self.assertEqual(eve._current_question["id"], qid)
+        self.assertIn(qid, [q["id"] for q in self.store.pending_questions()])
+        self.assertEqual(len(self.store.all_atoms()), atoms_before)
+
+    def test_a_bare_yes_or_no_with_nothing_asked_is_not_testimony(self):
+        dan = self._person("Dan")
+        for word in ["No", "yes", "no."]:
+            dan.turn(word)
+        self.assertEqual(self.store.all_atoms(), [])
+
+    def test_yes_settles_an_unresolved_contradiction(self):
+        self._person("Ben").turn("Bob is a scientist")
+        for name in ["Alice", "Eve", "Carl"]:
+            self._person(name).turn("Bob is not a scientist")
+        dan = self._person("Dan")
+        dan.turn("Sleep, Chloe")
+        self.assertIn("Is it true that Bob is a scientist?", dan.turn("yes"))
+        before = len(self.store.all_atoms()[0].provenance)
+        dan.turn("no")
+        self.assertEqual(len(self.store.all_atoms()[0].provenance), before + 1)
+
+    def test_reply_words_are_read_whatever_their_case(self):
+        self._person("Ben").turn("Felix is a cat")
+        self._person("Ben").turn("Sleep, Chloe")
+        eve = self._person("Eve")
+        eve.offer_questions()
+        self.assertEqual(eve.question_state, QuestionState.AWAITING_CONSENT)
+        eve.turn("YES!")
+        self.assertEqual(eve.question_state, QuestionState.AWAITING_ANSWER)
+        before = len(self.store.all_atoms()[0].evidence)
+        eve.turn("Yes.")
+        self.assertEqual(len(self.store.all_atoms()[0].evidence), before + 1)
+
+    def test_ask_more_takes_up_the_questions_after_stop(self):
+        for line in ["Felix is a cat", "Claire is an artist"]:
+            self._person("Ben").turn(line)
+        self._person("Ben").turn("Sleep, Chloe")
+        eve = self._person("Eve")
+        self._asked(eve)
+        eve.turn("stop")
+        self.assertIsNone(eve.offer_questions())
+        for phrasing in ["Ask more", "ask more questions, Chloe", "Ask something."]:
+            self.assertEqual(parse(phrasing).extra.get("command"), "ask", phrasing)
+        reply = eve.turn("Ask more")
+        self.assertEqual(eve.question_state, QuestionState.AWAITING_ANSWER)
+        self.assertIn("Is that right?", reply)
+
+    def test_ask_me_with_nothing_left_says_so(self):
+        self.assertIn("nothing to ask", self._person("Eve").turn("Ask me something"))
+
+    # ------------------------------------------------------- who is asked
+    def test_nobody_is_asked_what_they_have_already_answered(self):
+        self._conflict()
+        self.assertIsNone(self._person("Bob").offer_questions())
+        self.assertIsNone(self._person("Dario").offer_questions())
+
+    def test_you_once_told_me_is_said_only_to_the_source(self):
+        self._person("Sam").turn("Cora is a cook")
+        self._person("Dan").turn("Sleep, Chloe")
+        self.assertIn("You once told me that Cora is a cook", self._asked(self._person("Sam")))
+        self.assertIn("I've been told that Cora is a cook", self._asked(self._person("Bob")))
+
+    def test_a_question_about_the_person_asked_is_put_to_them_as_you(self):
+        self._person("Ben").turn("Bob is a scientist")
+        self._person("Dan").turn("Sleep, Chloe")
+        self.assertIn("that you are a scientist", self._asked(self._person("Bob")))
+
+    # ---------------------------------------------------- still worth it?
+    def test_a_settled_recheck_is_closed_not_asked(self):
+        self._person("Sam").turn("Cora is a cook")
+        self._person("Dan").turn("Sleep, Chloe")          # queues the recheck
+        self._person("Bob").turn("Cora is a cook")        # ...which a second source settles
+        self.assertIsNone(self._person("Eve").offer_questions())
+        self.assertEqual(self.store.pending_questions(), [])
+
+    def test_one_open_question_per_belief(self):
+        self._person("Ben").turn("Bob is a scientist")
+        self._person("Alice").turn("Bob is not a scientist")      # denial
+        for name in ["Eve", "Carl"]:
+            self._person(name).turn("Bob is not a scientist")
+        dan = self._person("Dan")
+        dan.turn("Sleep, Chloe")                                   # unresolved contradiction
+        dan.turn("Sleep, Chloe")
+        open_ = self.store.pending_questions()
+        self.assertEqual(len(open_), 1, [q["question"] for q in open_])
+        self.assertEqual(open_[0]["reason"], "unresolved_contradiction")
+
+    def test_an_unknown_term_is_answered_by_saying_what_it_is(self):
+        self._person("Ann").turn("what is a zorb?")
+        eve = self._person("Eve")
+        self.assertIn("What is a zorb?", self._asked(eve))
+        eve.turn("a zorb is a ball")
+        self.assertEqual(self.store.pending_questions(), [])
+
+    # ----------------------------------------------------------- the log
+    def test_every_turn_is_logged_once_and_as_said(self):
+        self._person("Ben").turn("Felix is a cat")
+        self._person("Ben").turn("Sleep, Chloe")
+        eve = self._person("Eve")
+        eve.offer_questions()
+        replies = [eve.turn("yes"), eve.turn("no")]
+        chloe = [i.text for i in self.store.interactions_for_person(eve.person.id) if i.role == "chloe"]
+        for reply in replies:
+            self.assertEqual(chloe.count(reply), 1, reply)
+        for line in chloe:
+            self.assertEqual(chloe.count(line), 1, f"logged more than once: {line!r}")
 
 
 if __name__ == "__main__":

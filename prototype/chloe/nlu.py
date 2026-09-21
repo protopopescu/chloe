@@ -11,6 +11,7 @@ llm_nlu.py implements the same signature over a language model, and
 nothing else in the package changes between the two.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -28,6 +29,13 @@ class UtteranceType(str, Enum):
 
 
 _SCOPE_SPLIT = re.compile(r"\bwhen\b|\bif\b", re.IGNORECASE)
+# Part of the parse() contract rather than of any one implementation: a
+# line longer than this is refused unread, by the patterns and by the LLM
+# parser alike. A single assertion in the forms CHLOE stores fits well
+# inside it, so the length itself is evidence the input is something else.
+# It also keeps the LLM from ever being handed a long block of text.
+MAX_INPUT_CHARS = int(os.getenv("CHLOE_MAX_INPUT_CHARS", "128"))
+
 _COPULAS = ("is", "are", "am", "was", "were", "means", "means that")
 _DETERMINERS = ("a", "an", "the")
 
@@ -123,6 +131,19 @@ COMMANDS = {
     "go to sleep": "sleep",
     "go to sleep, chloe": "sleep",
     "stop": "stop",
+    "ask": "ask",
+    "ask more": "ask",
+    "ask more questions": "ask",
+    "ask me": "ask",
+    "ask me more": "ask",
+    "ask me more questions": "ask",
+    "ask me something": "ask",
+    "ask me anything": "ask",
+    "ask me questions": "ask",
+    "ask something": "ask",
+    "ask away": "ask",
+    "any more questions": "ask",
+    "more questions": "ask",
     "exit": "exit",
     "quit": "exit",
     "bye": "exit",
@@ -133,8 +154,37 @@ COMMANDS = {
 }
 
 
+# A subject names the thing a belief is about. One that opens with a
+# question word ("how to know", "why it rains") is a question, not a thing,
+# and nothing can be believed or asked about it.
+_INTERROGATIVES = {"what", "who", "whom", "whose", "which", "how", "why", "where", "when"}
+
+
+def is_referring(phrase: Optional[str]) -> bool:
+    words = (phrase or "").strip().lower().split()
+    return bool(words) and words[0] not in _INTERROGATIVES
+
+
+def check_subject(utt: "Utterance") -> "Utterance":
+    """Part of the parse() contract, applied by both parsers: an utterance
+    whose subject names nothing is refused."""
+    if utt.type in (UtteranceType.STATEMENT, UtteranceType.NEGATION,
+                    UtteranceType.YN_QUESTION, UtteranceType.WH_QUESTION) \
+            and not is_referring(utt.subject):
+        return Utterance(raw=utt.raw, type=UtteranceType.UNKNOWN,
+                         extra={**utt.extra, "reason": "not_parseable"})
+    return utt
+
+
 def parse(text: str) -> Utterance:
+    return check_subject(_parse_patterns(text))
+
+
+def _parse_patterns(text: str) -> Utterance:
     raw = text
+    if len(text) > MAX_INPUT_CHARS:
+        return Utterance(raw=raw, type=UtteranceType.UNKNOWN,
+                         extra={"reason": "too_long"})
     text = _strip_vocative(text)
     t = _strip_punct(text)
     if _is_small_talk(t):

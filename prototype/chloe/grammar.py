@@ -18,11 +18,17 @@ than echoed:
         renders as "you", Chloe's as "I", and the copula is agreed with
         whichever pronoun came out.
 
-Queued questions deliberately do not use these: a question stored now may
-be asked of someone else later, so it keeps the real names.
+A queued question stores no wording. It is rendered with clause() when it
+is asked, for whoever is being asked, so the same question reads "you"
+to one person and a name to another.
 
 Only first- and second-person singular is handled. "we"/"our" have no
 single referent to resolve to and are left alone.
+
+The module also defines when two phrasings are the same belief
+(identity()). Every lookup, merge and duplicate check uses it, so a
+statement meets the atom it corroborates at the moment it is made rather
+than only after a sleep.
 """
 
 import re
@@ -164,3 +170,102 @@ def wh_clause(subject: str, speaker: str = "", wh: str = "what") -> str:
 def capitalise(text: str) -> str:
     """Sentence-initial capital that leaves an already-correct "I" alone."""
     return text[:1].upper() + text[1:] if text else text
+
+
+# ------------------------------------------------------------- identity
+
+# Forms of one relation, for identity only -- surface variants, not a claim
+# about their semantics.
+RELATION_SYNONYMS = {"is": "is", "are": "is", "am": "is", "was": "is", "were": "is",
+                     "means": "is", "has": "have"}
+
+
+def _lemma(verb: str) -> str:
+    """Third-person -s removed: 'likes' and 'like' are one relation. Crude,
+    and only ever applied to the verb that heads a relation."""
+    if verb in RELATION_SYNONYMS:
+        return RELATION_SYNONYMS[verb]
+    if len(verb) > 4 and verb.endswith("ies"):
+        return verb[:-3] + "y"
+    if len(verb) > 3 and verb.endswith(("sses", "shes", "ches", "xes", "zes", "oes")):
+        return verb[:-2]
+    if len(verb) > 2 and verb.endswith("s") and not verb.endswith(("ss", "us", "is")):
+        return verb[:-1]
+    return verb
+
+
+def norm_phrase(text: str) -> str:
+    """Case, spacing and trailing punctuation are not part of what was said."""
+    return " ".join((text or "").casefold().split()).strip(".,;:!? ")
+
+
+def norm_relation(relation: str) -> str:
+    words = norm_phrase(relation).split()
+    if not words:
+        return ""
+    return " ".join([_lemma(words[0])] + words[1:])
+
+
+def identity(subject: str, relation: str, obj: str, scope: str = "") -> tuple:
+    """When two phrasings are one belief: 'Cora like to cook' and 'cora
+    likes to cook', 'hector' and 'Hector'."""
+    return (norm_phrase(subject), norm_relation(relation), norm_phrase(obj), norm_phrase(scope))
+
+
+def refers_to(subject: str, speaker: str) -> bool:
+    """Whether a resolved subject is about the speaker: their name, or
+    something of theirs ("Bob's cat")."""
+    if not subject or not speaker:
+        return False
+    s, name = norm_phrase(subject), norm_phrase(speaker)
+    return s == name or s.startswith(norm_phrase(_possessive(speaker)) + " ")
+
+
+# ------------------------------------------------------------- grounding
+
+_CONTENT_RE = re.compile(r"[A-Za-z0-9']+")
+
+# Words a reading may use without their appearing in what it was read
+# from: they carry no content of their own, and demanding them back would
+# refuse "a black cat" for the sake of its article.
+FUNCTION_WORDS = {
+    "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "with", "from",
+    "and", "or", "is", "are", "was", "were", "be", "been", "am", "not",
+    "that", "this", "these", "those", "its", "his", "her", "their", "some", "it",
+}
+
+
+def fold(word: str) -> str:
+    """Crude singular fold, enough to let 'cats' and 'a cat' meet. Nothing
+    here is linguistics; it is the smallest normalisation that stops a
+    grounding check refusing a reading over a plural."""
+    w = word.strip().lower()
+    if w.endswith("'s"):
+        w = w[:-2]
+    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+        w = w[:-1]
+    return w
+
+
+def vocabulary(texts) -> set:
+    """Folded content words, with a contraction also giving its stem, so
+    that "I'm" grounds "I" and "Felix's" grounds "Felix"."""
+    vocab = set()
+    for t in texts:
+        for w in _CONTENT_RE.findall((t or "").lower()):
+            vocab.add(fold(w))
+            vocab.add(fold(w.split("'")[0]))
+    return vocab
+
+
+def ungrounded_words(text: str, vocab: set) -> list:
+    """Content words of `text` that appear nowhere in `vocab`."""
+    return [w for w in _CONTENT_RE.findall((text or "").lower())
+            if w not in FUNCTION_WORDS and fold(w) not in vocab]
+
+
+def in_source_case(text: str, source: str) -> str:
+    """Each word of `text` spelled as `source` spells it, where it does:
+    a reading keeps the person's own capitals ("Hector", not "hector")."""
+    spelling = {w.lower(): w for w in _CONTENT_RE.findall(source or "")}
+    return _CONTENT_RE.sub(lambda m: spelling.get(m.group(0).lower(), m.group(0)), text or "")

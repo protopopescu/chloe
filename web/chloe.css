@@ -298,7 +298,7 @@ body{
 .chat-log{
   padding:1.25rem;
   min-height:140px;
-  max-height:280px;
+  max-height:360px;
   overflow-y:auto;
   display:flex;
   flex-direction:column;

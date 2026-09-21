@@ -10,9 +10,14 @@ phrase that reply. Its licence is linguistic, not epistemic.
 That licence is enforced rather than merely requested. A naturalisation is
 checked before it is shown, and one that repeats the prompt's own
 scaffolding, echoes the person's words back at them, runs far longer than
-the reply it was given, swaps the speakers, or introduces a name or number
-the core never supplied, is rejected in favour of the engine's own text --
-the same fallback taken when the server is unreachable.
+the reply it was given, swaps the speakers, introduces a name or number
+the core never supplied, or leaves out a name it did, is rejected in favour of
+the engine's own text -- the same fallback taken when the server is
+unreachable.
+
+CHLOE's own questions are not phrased at all. A question put to the person
+is what their next answer will be recorded against, so it reaches them in
+the core's words (question_to_keep, and the server's use of it).
 
 The last two checks are the ones that matter most. A model with general
 knowledge will otherwise settle a question the core deliberately left open
@@ -80,6 +85,7 @@ LENGTH_FLOOR = 240      # ... and short replies are never rejected for length
 # when it falls inside a sentence -- at the start it is just orthography.
 _TOKEN_RE = re.compile(r"[A-Za-z][\w'’-]*|\d[\d.,:%/-]*")
 _SENTENCE_BREAK = ".!?:;\n"
+_CORE_SENTENCE_BREAK = ".!?;\n"
 # First person and Chloe's own name are hers to use wherever she likes.
 _ALWAYS_PERMITTED = {"i", "i'm", "i've", "i'll", "i'd", CHLOE_NAME.lower()}
 
@@ -195,7 +201,7 @@ def naturalise_request(user_message: str, ground_truth_reply: str) -> list:
     ]
 
 
-def _referents(text: str, strict: bool = True) -> set:
+def _referents(text: str, strict: bool = True, breaks: str = _SENTENCE_BREAK) -> set:
     """Names and numbers in `text`, as a set of lowercased tokens.
 
     `strict` asks which tokens *count as* a name, and is used on the reply:
@@ -214,7 +220,7 @@ def _referents(text: str, strict: bool = True) -> set:
             continue
         if strict:
             back = text[: m.start()].rstrip(" \t\"'([‘“")
-            if not back or back[-1] in _SENTENCE_BREAK:
+            if not back or back[-1] in breaks:
                 continue    # start of a sentence: orthography, not a name
         found.add(token.lower())
     return found
@@ -310,4 +316,35 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     if len(text) > limit:
         return f"far longer than the reply it was given ({len(text)} > {limit})"
 
+    # Nothing left out. The names in the core's reply are who and what it
+    # decided something about, and a phrasing that drops one has told the
+    # person something else ("You're welcome" for "that matches:
+    # Humuhumunukunukapuaa is a fish"). The core writes no labels, so a
+    # capital after its colons is a name ("I'll double check: Hector is a
+    # dog"). A number may be left out -- "(confidence 0.63)" is detail, not
+    # decision -- but never changed, which the check above already covers.
+    required = {r for r in _referents(ground_truth_reply, strict=True, breaks=_CORE_SENTENCE_BREAK)
+                if not r[0].isdigit()} - _ALWAYS_PERMITTED
+    missing = sorted(r for r in required
+                     if not re.search(rf"(?<![\w'’]){re.escape(r)}(?![\w'’])", low))
+    if missing:
+        return f"left out a name the core gave ({missing[0]!r})"
+
+
     return None
+
+
+def question_to_keep(ground_truth_reply: str, question: str):
+    """Split the core's reply into the part the model may phrase and the
+    question CHLOE has just put, which it may not.
+
+    Returns (to_phrase, question). `to_phrase` may be empty -- a reply that
+    is only a question has nothing to phrase. When the reply does not end
+    with the question it names, nothing is phrased at all: the whole reply
+    goes out as the core wrote it, since the split cannot be trusted."""
+    if not question:
+        return ground_truth_reply, ""
+    text = ground_truth_reply.rstrip()
+    if not text.endswith(question):
+        return "", text
+    return text[: -len(question)].rstrip(), question

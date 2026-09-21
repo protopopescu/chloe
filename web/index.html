@@ -6,7 +6,7 @@
 <meta name="description" content="CHLOE — a persistent epistemic architecture for inspectable AI, with explicit beliefs, provenance, trust, and cross-session learning.">
 <meta name="author" content="Dan Protopopescu">
 <title>CHLOE — Persistent Epistemic Architecture</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="chloe-favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -25,7 +25,8 @@
     <nav class="site-nav" id="siteNav">
       <a href="#about">About</a>
       <a href="#chat">Chat</a>
-      <a href="CHLOE.pdf">Paper</a>
+      <a href="https://doi.org/10.5281/zenodo.22862832" target="_blank">Paper</a>
+      <a href="https://github.com/protopopescu/chloe" target="_blank">Code</a>
       <a href="#timeline">History</a>
       <a href="mailto:dan.protopopescu@glasgow.ac.uk">Contact</a>
     </nav>
@@ -86,7 +87,7 @@
         <div class="msg msg-bot">Hi, I&rsquo;m Chloe. Tell me something, or ask me what I know.</div>
       </div>
       <form class="chat-input-row" id="chatForm">
-        <input type="text" id="chatInput" placeholder="Say something to Chloe&hellip;" autocomplete="off">
+        <input type="text" id="chatInput" placeholder="Say something to Chloe&hellip;" autocomplete="off" maxlength="128">
         <button type="submit" class="btn btn-primary btn-small" id="chatSubmit">Send</button>
       </form>
     </div>

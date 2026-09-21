@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from chloe import questions
 from chloe.dialogue import CONVERSATION_ROLES
 from chloe.storage import KnowledgeStore
 
@@ -33,15 +34,25 @@ def _people_by_id(store):
     return {p.id: p for p in store.all_people()}
 
 
-def _evidence(atom, people):
+def _evidence(store, atom, people):
+    """`note` says where evidence carried from another belief came from,
+    and why a voided one no longer counts."""
     out = []
     for prov in atom.provenance:
         person = people.get(prov.person_id)
+        via = store.atom_by_id(prov.via_atom_id) if prov.via_atom_id else None
+        note = None
+        if prov.void:
+            note = f"withdrawn: compatible with '{via.statement()}'" if via else "withdrawn: the belief it came from was removed"
+        elif via is not None:
+            note = f"via '{via.statement()}'"
         out.append({
             "person": person.name if person else f"#{prov.person_id}",
             "effect": POLARITY.get(prov.polarity, str(prov.polarity)),
             "at": prov.at,
             "parse_confidence": prov.parse_confidence,
+            "void": prov.void,
+            "note": note,
         })
     return out
 
@@ -58,7 +69,7 @@ def collect(store, want):
             "scope": a.scope, "domain": a.domain,
             "status": a.status.value, "confidence": round(a.confidence, 3),
             "created_at": a.created_at, "updated_at": a.updated_at,
-            "evidence": _evidence(a, people),
+            "evidence": _evidence(store, a, people),
         } for a in sorted(store.all_atoms(), key=lambda a: (-a.confidence, a.subject.lower()))]
 
     if "people" in want:
@@ -68,8 +79,11 @@ def collect(store, want):
         } for p in people.values()]
 
     if "questions" in want:
+        # Worded from the belief as it stands; a question whose doubt has
+        # lapsed is left out (it is closed the next time the queue is read).
         data["open_questions"] = [
-            {"question": q["question"], "reason": q["reason"]} for q in store.pending_questions()
+            {"question": questions.render(store, q), "reason": q["reason"]}
+            for q in store.pending_questions() if questions.still_open(store, q)
         ]
 
     return data
@@ -100,7 +114,8 @@ def print_human(data):
             print(f"      {b['status']}, confidence {b['confidence']:.2f}, domain {b['domain']}")
             for e in b["evidence"]:
                 conf = "" if e["parse_confidence"] is None else f", parse {e['parse_confidence']:.2f}"
-                print(f"      - {e['person']} {e['effect']} it ({e['at']}{conf})")
+                note = f"; {e['note']}" if e["note"] else ""
+                print(f"      - {e['person']} {e['effect']} it ({e['at']}{conf}{note})")
             if not b["evidence"]:
                 print("      - no evidence: generated during sleep, not yet verified")
 
@@ -118,7 +133,7 @@ def print_human(data):
     if "turns" in data:
         print(f"\nTRANSCRIPT — {data['person']} ({len(data['turns'])} turns)")
         for t in data["turns"]:
-            who = data["person"] if t["role"] == "human" else "Chloe"
+            who = data["person"] if t["role"] == "source" else "Chloe"
             print(f"  {t['at']}  {who}: {t['text']}")
     print()
 

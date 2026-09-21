@@ -92,6 +92,10 @@ async function refreshStatus() {
   try {
     const res = await fetch('/api/health');
     const data = await res.json();
+    // The field's cap follows the parser's, so CHLOE_MAX_INPUT_CHARS is the
+    // one place it is set. The attribute in index.html is the fallback for
+    // before the first poll answers.
+    if (data.max_input_chars) chatInput.maxLength = data.max_input_chars;
     if (data.dreaming) {
       statusPill.textContent = 'dreaming…';
       statusPill.className = 'status-pill dreaming';
@@ -201,7 +205,7 @@ function saveFile(text, filename, type) {
 
 function visibleTranscript() {
   return Array.from(chatLog.querySelectorAll('.msg')).map(node => ({
-    role: node.classList.contains('msg-user') ? 'human' : 'chloe',
+    role: node.classList.contains('msg-user') ? 'source' : 'chloe',
     text: node.textContent,
   }));
 }

@@ -8,7 +8,7 @@ Usage:
 
 Type ordinary sentences ('Claire is an artist'), questions ('what is Claire?',
 'is Claire an artist?'), or commands: sleep, what do you know, who do you
-trust, show open questions, exit.
+trust, show open questions, ask more, stop, exit.
 """
 
 import argparse

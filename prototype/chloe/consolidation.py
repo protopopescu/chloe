@@ -31,15 +31,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from . import llm_client, trust as trust_mod
+from . import entailment, grammar, llm_client, questions, trust as trust_mod
 from .models import Atom, AtomStatus
 # Reused rather than re-implemented: the reply contract for a JSON-returning
 # model is the same one the input parser enforces -- validate, never repair.
 from .llm_nlu import BadParse, _clean_field, _extract_json
-
-# Treated as the same relation for duplicate detection only -- surface
-# synonyms, not a claim about their semantics.
-RELATION_SYNONYMS = {"is": "is", "are": "is", "was": "is", "were": "is", "means": "is"}
 
 MAX_VERIFICATION_QUESTIONS_PER_SLEEP = 3
 
@@ -77,6 +73,7 @@ def _grounded_only() -> bool:
 class SleepReport:
     contradictions_flagged: int = 0
     merged: int = 0
+    implications_linked: int = 0
     hypotheses_generated: int = 0
     verification_questions_queued: int = 0
     details: List[str] = field(default_factory=list)
@@ -84,7 +81,8 @@ class SleepReport:
     def summary(self) -> str:
         lines = [
             f"Sleep complete. Contradictions flagged: {self.contradictions_flagged}, "
-            f"merged duplicates: {self.merged}, hypotheses generated: {self.hypotheses_generated}, "
+            f"merged duplicates: {self.merged}, implications linked: {self.implications_linked}, "
+            f"hypotheses generated: {self.hypotheses_generated}, "
             f"new verification questions: {self.verification_questions_queued}."
         ]
         lines.extend(self.details)
@@ -95,7 +93,8 @@ def sleep(store) -> SleepReport:
     report = SleepReport()
     people_by_id = {p.id: p for p in store.all_people()}
 
-    _merge_duplicates(store, report)
+    _merge_duplicates(store, report, people_by_id)
+    _link_implications(store, report)
     _flag_contradictions(store, report)
     _generate_hypotheses(store, report, people_by_id)
     _generate_hypotheses_llm(store, report)
@@ -105,40 +104,156 @@ def sleep(store) -> SleepReport:
 
 
 def _norm_relation(rel: str) -> str:
-    return RELATION_SYNONYMS.get(rel.strip().lower(), rel.strip().lower())
+    return grammar.norm_relation(rel)
 
 
 def _signature(subject: str, relation: str, obj: str) -> tuple:
-    return (subject.strip().lower(), _norm_relation(relation), obj.strip().lower())
+    return grammar.identity(subject, relation, obj)[:3]
 
 
-def _merge_duplicates(store, report: SleepReport) -> None:
-    atoms = store.all_atoms()
-    seen: Dict[tuple, Atom] = {}
-    for atom in atoms:
-        sig = (atom.subject.strip().lower(), _norm_relation(atom.relation), atom.object.strip().lower(), atom.scope.strip().lower())
-        if sig not in seen:
-            seen[sig] = atom
+def _merge_duplicates(store, report: SleepReport, people_by_id: dict) -> None:
+    """Atoms that state one belief in different words (grammar.identity)
+    become one. The best-attested phrasing is kept as the wording -- the
+    one the most people have given evidence on, the earliest on a tie --
+    and takes every piece of evidence and every open question of the
+    others, then has its confidence and status worked out again."""
+    groups: Dict[tuple, List[Atom]] = {}
+    for atom in store.all_atoms():
+        groups.setdefault(atom.identity(), []).append(atom)
+    for group in groups.values():
+        if len(group) < 2:
             continue
-        keeper = seen[sig]
-        # Combine provenance onto the keeper, then drop the duplicate.
-        for prov in atom.provenance:
-            store.add_provenance(keeper.id, prov)
-            keeper.provenance.append(prov)
-        store.delete_atom(atom.id)
-        report.merged += 1
-        report.details.append(f"  merged duplicate '{atom.statement()}' into atom #{keeper.id}")
+        keeper = max(group, key=lambda a: (len(a.evidence), -a.id))
+        for atom in group:
+            if atom is keeper:
+                continue
+            for prov in atom.provenance:
+                store.add_provenance(keeper.id, prov)
+                keeper.provenance.append(prov)
+            store.repoint_atom(atom.id, keeper.id)
+            store.delete_atom(atom.id)
+            report.merged += 1
+            report.details.append(f"  merged '{atom.statement()}' into '{keeper.statement()}' (#{keeper.id})")
+        if keeper.evidence:
+            entailment.recompute(store, keeper, people_by_id)
+        else:
+            store.save_atom(keeper)
+
+
+# ---------------------------------------------------------- implications
+
+_IMPLICATION_SYSTEM_PROMPT = """\
+You are part of the consolidation step of CHLOE, a knowledge system that
+stores statements as subject-relation-object triples. You are shown
+numbered pairs of statements made about the same thing. For each pair,
+decide whether one of them entails the other: whenever it is true, the
+other must be true as well, by the meaning of the words alone.
+
+"Felix is a black cat" entails "Felix is a cat". "Poking a bear is risky
+and dangerous" entails "Poking a bear is dangerous". "Hector is a dog" and
+"Hector is a cat" entail nothing of each other, and neither do two
+statements that merely could both be true.
+
+Return ONLY a JSON object, no prose and no code fences:
+{"implications": [{"pair": <number>, "specific": "A" or "B", "confidence": <number 0-1>}]}
+List only the pairs where one statement entails the other; "specific" is
+the one that entails. If there are none, return {"implications": []}.
+"""
+
+
+def _implication_candidates(store) -> List[Tuple[Atom, Atom]]:
+    """Pairs of values somebody stated on the same subject, relation and
+    scope, not yet settled either way -- the pairs that may have been taken
+    for rivals."""
+    groups: Dict[tuple, List[Atom]] = {}
+    for atom in store.all_atoms():
+        if atom.status == AtomStatus.HYPOTHESIS or atom.negative:
+            continue
+        s, r, _, sc = atom.identity()
+        groups.setdefault((s, r, sc), []).append(atom)
+    pairs = []
+    for group in groups.values():
+        group.sort(key=lambda a: a.id)
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if not store.judged(a.id, b.id):
+                    pairs.append((a, b))
+    return pairs[:MAX_LLM_CONTEXT_ATOMS]
+
+
+def _link_implications(store, report: SleepReport) -> None:
+    """Ask the LLM which apparent rivals are one value implying the other
+    (entailment.py). The model proposes and the core checks that the pair
+    is one it was shown. Where the words carry the implication -- the
+    general value uses only words of the specific one -- the two are linked
+    now. Where it rests on the model's knowledge of the world ("risky" ->
+    "dangerous", "a poodle" -> "a dog"), it becomes a question, and a
+    person's yes makes the link: the model's knowledge enters as a
+    conjecture for somebody to confirm, never as a settlement. With the
+    grounding switch off, every proposal is linked outright."""
+    if not llm_client.is_configured():
+        return
+    pairs = _implication_candidates(store)
+    if not pairs:
+        return
+    listing = "\n".join(f"{n}. A: {a.subject} {a.relation} {a.object}\n   B: {b.subject} {b.relation} {b.object}"
+                         for n, (a, b) in enumerate(pairs, 1))
+    try:
+        payload = _extract_json(llm_client.chat(
+            [{"role": "system", "content": _IMPLICATION_SYSTEM_PROMPT},
+             {"role": "user", "content": "Pairs:\n" + listing}],
+            temperature=0.0, max_tokens=400,
+        ))
+    except (llm_client.LLMUnavailable, BadParse) as e:
+        report.details.append(f"  no implications from the model: {e}")
+        return
+    found = payload.get("implications")
+    if not isinstance(found, list):
+        report.details.append("  no implications from the model: reply carried no 'implications' list")
+        return
+    for item in found:
+        proposal, refusal = _validated_implication(item, pairs)
+        if proposal is None:
+            report.details.append(f"  implication refused: {refusal}")
+            continue
+        specific, general, grounded = proposal
+        if store.judged(specific.id, general.id):
+            continue
+        if grounded or not _grounded_only():
+            voided = entailment.link(store, specific, general)
+            report.implications_linked += 1
+            report.details.append(f"  '{specific.statement()}' implies '{general.statement()}'"
+                                  + (f" ({voided} dispute(s) withdrawn)" if voided else ""))
+        elif questions.queue(store, "implication", specific, other=general):
+            report.verification_questions_queued += 1
+            report.details.append(f"  asking whether '{specific.statement()}' implies "
+                                  f"'{general.statement()}' (not carried by the words alone)")
+
+
+def _validated_implication(item, pairs) -> Tuple[Optional[Tuple[Atom, Atom, bool]], Optional[str]]:
+    """A proposal checked against the contract: (specific, general, whether
+    the words alone carry it), or None and the reason it was refused."""
+    if not isinstance(item, dict):
+        return None, "reply contained something that is not a pair"
+    n, side, confidence = item.get("pair"), item.get("specific"), item.get("confidence")
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= len(pairs):
+        return None, f"pair {n!r} was not one of those shown"
+    if side not in ("A", "B"):
+        return None, f"pair {n}: 'specific' must be A or B, not {side!r}"
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) \
+            or float(confidence) < MIN_LLM_HYPOTHESIS_CONFIDENCE:
+        return None, f"pair {n}: confidence {confidence!r} is missing or below the floor"
+    a, b = pairs[n - 1]
+    specific, general = (a, b) if side == "A" else (b, a)
+    grounded = not grammar.ungrounded_words(general.object, grammar.vocabulary([specific.object]))
+    return (specific, general, grounded), None
 
 
 def _flag_contradictions(store, report: SleepReport) -> None:
     for atom in store.all_atoms():
         if atom.status == AtomStatus.CONTRADICTED:
             report.contradictions_flagged += 1
-            store.queue_question(
-                f"I still have conflicting evidence about '{atom.subject} {atom.relation} ...' "
-                f"(currently: {atom.statement()}, confidence {atom.confidence:.2f}). Can you help me settle it?",
-                reason="unresolved_contradiction", related_atom_id=atom.id,
-            )
+            questions.queue(store, "unresolved_contradiction", atom)
 
 
 def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None:
@@ -151,16 +266,16 @@ def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None
         props = store.get_relation(rel_name)
         if not props.transitive:
             continue  # undeclared relations are not assumed transitive
-        by_subject = {a.subject.strip().lower(): a for a in group}
+        by_subject = {grammar.norm_phrase(a.subject): a for a in group}
         for a in group:
-            bridge = by_subject.get(a.object.strip().lower())
+            bridge = by_subject.get(grammar.norm_phrase(a.object))
             if bridge is None or bridge is a:
                 continue
             # a: X rel Y, bridge: Y rel Z  =>  hypothesis X rel Z
             existing = None
             for cand in group:
-                if cand.subject.strip().lower() == a.subject.strip().lower() and \
-                   cand.object.strip().lower() == bridge.object.strip().lower():
+                if grammar.norm_phrase(cand.subject) == grammar.norm_phrase(a.subject) and \
+                   grammar.norm_phrase(cand.object) == grammar.norm_phrase(bridge.object):
                     existing = cand
                     break
             if existing is not None:
@@ -172,10 +287,7 @@ def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None
             store.save_atom(hyp)
             report.hypotheses_generated += 1
             report.details.append(f"  hypothesis: {hyp.statement()} (derived via declared-transitive '{rel_name}')")
-            store.queue_question(
-                f"I worked out from what you've told me that {hyp.subject} {hyp.relation} {hyp.object} -- is that right?",
-                reason="hypothesis", related_atom_id=hyp.id,
-            )
+            questions.queue(store, "hypothesis", hyp)
             report.verification_questions_queued += 1
 
 
@@ -242,10 +354,7 @@ def _generate_hypotheses_llm(store, report: SleepReport) -> None:
         report.hypotheses_generated += 1
         cited = ", ".join(f"#{int(s)}" for s in cand["sources"])
         report.details.append(f"  hypothesis: {hyp.statement()} (put together from {cited})")
-        store.queue_question(
-            f"Am I right that {hyp.statement()}?",
-            reason="llm_hypothesis", related_atom_id=hyp.id,
-        )
+        questions.queue(store, "llm_hypothesis", hyp)
         report.verification_questions_queued += 1
 
 
@@ -314,7 +423,6 @@ Answer:
 {"hypotheses": [{"subject": "Claire", "relation": "is", "object": "a tired artist", "scope": "she is at work", "sources": [1, 2], "confidence": 0.7}]}
 """
 
-_WORD_RE = re.compile(r"[a-z0-9']+")
 
 # An atom is one triple with one scope, so a proposal naming two things at
 # once is not a hypothesis this representation can hold -- it is two, and
@@ -325,40 +433,12 @@ _COMPOUND_RE = re.compile(r"[,;]|\s(?:and|or|but)\s", re.IGNORECASE)
 # as part of the value and matched against rival values as if it were one.
 _CONDITION_RE = re.compile(r"\s(?:when|if|while|during|unless|whenever)\s", re.IGNORECASE)
 
-# Words a proposal may use without them appearing in its sources: they carry
-# no content of their own, and demanding them back would refuse "a black
-# cat" for the sake of its article.
-_FUNCTION_WORDS = {
-    "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "with", "from",
-    "and", "or", "is", "are", "was", "were", "be", "been", "am", "not",
-    "that", "this", "these", "those", "its", "his", "her", "their", "some", "it",
-}
-
-
-def _fold(word: str) -> str:
-    """Crude singular fold, enough to let 'cats' and 'a cat' meet. Nothing
-    here is linguistics; it is the smallest normalisation that stops the
-    grounding check refusing a proposal over a plural."""
-    w = word.strip().lower()
-    if w.endswith("'s"):
-        w = w[:-2]
-    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
-        w = w[:-1]
-    return w
-
-
 def _vocabulary(atoms: List[Atom]) -> set:
-    vocab = set()
-    for atom in atoms:
-        for field_text in (atom.subject, atom.relation, atom.object, atom.scope):
-            for word in _WORD_RE.findall((field_text or "").lower()):
-                vocab.add(_fold(word))
-    return vocab
+    return grammar.vocabulary(t for a in atoms for t in (a.subject, a.relation, a.object, a.scope))
 
 
 def _ungrounded_words(text: str, vocab: set) -> List[str]:
-    return [w for w in _WORD_RE.findall(text.lower())
-            if w not in _FUNCTION_WORDS and _fold(w) not in vocab]
+    return grammar.ungrounded_words(text, vocab)
 
 
 def _atom_listing(atoms: List[Atom]) -> str:
@@ -441,13 +521,9 @@ def _validated_hypothesis(cand, by_id: Dict[int, Atom],
 
 
 def _queue_verification_for_weak_atoms(store, report: SleepReport) -> None:
-    weak = [a for a in store.all_atoms() if a.status == AtomStatus.CANDIDATE and len(a.provenance) <= 1]
+    weak = [a for a in store.all_atoms() if a.status == AtomStatus.CANDIDATE
+            and len({p.person_id for p in a.evidence}) <= 1]
     weak.sort(key=lambda a: a.updated_at)
     for atom in weak[:MAX_VERIFICATION_QUESTIONS_PER_SLEEP]:
-        queued_before = len(store.pending_questions())
-        store.queue_question(
-            f"You once told me {atom.statement()}. Is that still true?",
-            reason="weak_candidate_recheck", related_atom_id=atom.id,
-        )
-        if len(store.pending_questions()) > queued_before:
+        if questions.queue(store, "weak_candidate_recheck", atom):
             report.verification_questions_queued += 1

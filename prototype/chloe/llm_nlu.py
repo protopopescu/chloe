@@ -9,6 +9,8 @@ engine.
 
 Routing (LLM-first, pattern fallback):
 
+  0. A line longer than nlu.MAX_INPUT_CHARS is refused unread, before
+     anything below runs.
   1. Commands are intercepted deterministically, by exact match against
      nlu.COMMANDS, before the LLM sees anything. The LLM is never allowed
      to emit a COMMAND utterance -- if it tries, the parse is refused. The
@@ -19,6 +21,9 @@ Routing (LLM-first, pattern fallback):
   3. Otherwise the LLM is asked to classify the utterance into one of the
      declared UtteranceTypes and its reply is strictly validated: unknown
      type, missing fields, or a malformed shape are never patched up.
+     Every content word of subject, object and scope must come from the
+     input: a word the model supplied rather than read is a contract
+     violation.
   4. A *valid* LLM refusal (type "unknown", or confidence below
      CHLOE_PARSE_MIN_CONFIDENCE) is final and is NOT retried against the
      pattern parser. Refuse-rather-than-guess would mean nothing if a
@@ -41,7 +46,7 @@ import json
 import os
 import re
 
-from . import llm_client, nlu
+from . import grammar, llm_client, nlu
 from .nlu import Utterance, UtteranceType
 
 MIN_PARSE_CONFIDENCE = float(os.getenv("CHLOE_PARSE_MIN_CONFIDENCE", "0.6"))
@@ -168,6 +173,21 @@ def _clean_field(value) -> str:
     return value.strip().strip(".?! ").strip()
 
 
+def _grounded(value: str, raw: str) -> str:
+    """A field as read from the input. The parser may drop packaging and
+    regularise a verb ("it's daytime" -> "it is daytime"), but every
+    content word it returns must be one the person used: a word that
+    appears nowhere in the line was supplied by the model, and is a contract
+    violation rather than something to store. The person's own spelling,
+    capitals included, is what is kept."""
+    if not value:
+        return value
+    stray = grammar.ungrounded_words(value, grammar.vocabulary([raw]))
+    if stray:
+        raise BadParse(f"{', '.join(stray)!s} in {value!r} does not appear in the input")
+    return grammar.in_source_case(value, raw)
+
+
 def _refuse(raw: str, confidence, reason: str) -> Utterance:
     extra = {"parser": "llm", "reason": reason}
     if confidence is not None:
@@ -203,10 +223,10 @@ def _to_utterance(raw: str, payload: dict) -> Utterance:
     if confidence < MIN_PARSE_CONFIDENCE:
         return _refuse(raw, confidence, "low_confidence")
 
-    subject = _clean_field(payload.get("subject"))
+    subject = _grounded(_clean_field(payload.get("subject")), raw)
     relation = _clean_field(payload.get("relation")).lower()
-    obj = _clean_field(payload.get("object"))
-    scope = _clean_field(payload.get("scope"))
+    obj = _grounded(_clean_field(payload.get("object")), raw)
+    scope = _grounded(_clean_field(payload.get("scope")), raw)
 
     if utt_type in (UtteranceType.STATEMENT, UtteranceType.NEGATION, UtteranceType.YN_QUESTION):
         if not (subject and relation and obj):
@@ -217,7 +237,7 @@ def _to_utterance(raw: str, payload: dict) -> Utterance:
         relation = relation or "is"
         obj = ""
 
-    return Utterance(
+    return nlu.check_subject(Utterance(
         raw=raw,
         type=utt_type,
         subject=subject,
@@ -226,7 +246,7 @@ def _to_utterance(raw: str, payload: dict) -> Utterance:
         scope=scope,
         negated=(utt_type == UtteranceType.NEGATION),
         extra={"parser": "llm", "parse_confidence": confidence},
-    )
+    ))
 
 
 def _ask_llm(text: str) -> dict:
@@ -244,9 +264,17 @@ def _ask_llm(text: str) -> dict:
 def parse(text: str) -> Utterance:
     """Drop-in replacement for nlu.parse().
 
-    Commands first (deterministic, never via the LLM), then the LLM if one
-    is configured, then -- only on a broken exchange -- the patterns.
+    Length first, then commands (deterministic, never via the LLM), then
+    the LLM if one is configured, then -- only on a broken exchange -- the
+    patterns.
     """
+    if len(text) > nlu.MAX_INPUT_CHARS:
+        # Ahead of the command table and of the LLM: an over-long line is
+        # not a command, and the point of the limit is that the model never
+        # sees the text. No "parser" key, since neither parser ran.
+        return Utterance(raw=text, type=UtteranceType.UNKNOWN,
+                         extra={"reason": "too_long"})
+
     stripped = nlu._strip_vocative(text)
     low = nlu._strip_punct(stripped).lower()
     if low in nlu.COMMANDS:

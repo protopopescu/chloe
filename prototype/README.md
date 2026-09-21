@@ -17,7 +17,8 @@ python3 -m chloe
 
 Talk to it: state facts (`Claire is an artist`), ask questions
 (`what is Claire?`, `is Claire an artist?`), or use commands: `sleep`,
-`what do you know`, `who do you trust`, `show open questions`, `exit`.
+`stop`, `ask more`, `what do you know`, `who do you trust`,
+`show open questions`, `exit`.
 
 Run a second session as a different name and tell it something that
 contradicts the first session — CHLOE will flag the contradiction, adjust
@@ -33,7 +34,7 @@ trust, and queue a question to ask about it next time.
 | Domain-specific trust, not one global score | `Person.trust` is a dict keyed by domain |
 | Conversation as evidence acquisition | `dialogue.ChloeEngine.turn()` |
 | First and second person resolved to who is speaking | `grammar.py` — ports the 2000 `SwapPronoun()`/`AccordTheVerb()`: "I"/"you" resolve to the speaker and to Chloe on the way in, and render back as "you"/"I" with the copula agreed on the way out |
-| Sleep / offline consolidation | `consolidation.sleep()` — merges duplicates, flags contradictions, generates hypotheses, queues verification questions |
+| Sleep / offline consolidation | `consolidation.sleep()` — merges duplicates, flags contradictions, links values that imply one another, generates hypotheses, queues verification questions |
 | Hypotheses become knowledge only via verification | `AtomStatus.HYPOTHESIS` → `CANDIDATE`/`CONFIRMED` only after a person confirms it in a later `turn()` |
 | Never assume transitivity/symmetry from language alone | `RelationProperties` — a relation is only used to derive hypotheses if explicitly declared via `store.declare_relation(...)` (see `--declare-transitive` CLI flag) |
 | LLM as the linguistic layer, symbolic core as authority | Two symmetric interfaces. **Input:** `llm_nlu.parse(text) -> Utterance` asks the configured LLM to read free text into a structured utterance of a declared type, refusing rather than guessing; the original pattern parser (`nlu.parse`) remains as offline fallback. **Output:** `llm_client.py` + `persona.py` phrase the engine's already-decided factual reply naturally. In both directions the symbolic core stays the authority: the LLM never adds facts, never issues commands, never writes to the store |
@@ -57,8 +58,11 @@ chloe/
   persona.py        system prompt for the output-side naturalisation layer
   trust.py          trust updates + confidence scoring
   dialogue.py        ChloeEngine: the conversational loop
-  consolidation.py   sleep(): contradiction detection, dedup, hypothesis generation
-                     (declared relation properties, and LLM-proposed conjectures)
+  questions.py       open questions: what CHLOE asks, of whom, and when a question lapses
+  entailment.py      implication between beliefs: linked, not merged, with evidence carried across
+  consolidation.py   sleep(): contradiction detection, dedup, implication between
+                     stated values, hypothesis generation (declared relation
+                     properties, and LLM-proposed conjectures)
   cli.py / __main__.py   `python -m chloe`
 inspect_db.py       read-only inspector for any CHLOE store (no server needed)
 tests/              offline test suites; python3 -m unittest discover -s tests -t .
@@ -68,7 +72,9 @@ tests/              offline test suites; python3 -m unittest discover -s tests -
   test_naturalisation.py  the output interface and its licence checks
   test_questions.py       consolidation questions and the consent-gated ask
   test_smalltalk.py       small talk and proposition extraction
-  test_consolidation.py   the sleep pass and LLM hypotheses
+  test_consolidation.py   the sleep pass, LLM hypotheses and implications
+  test_contradictions.py  rival values and disputed beliefs
+  test_claims.py          how a claim lands on the belief it is about
 ```
 
 ## Using an LLM at the linguistic interfaces
@@ -126,6 +132,23 @@ recombine what it was told, but "Claire is a painter" is refused, because
 with whoever answers the question becoming the source. The model's
 self-reported confidence is a filter only, never part of the belief maths:
 a hypothesis is capped at the weakest atom it rests on, damped.
+
+### Implication between values at sleep
+
+Two values stated of the same subject need not be rivals: "Felix is a black
+cat" and "Felix is a cat" hold together, where "Hector is a dog" and
+"Hector is a cat" do not. The model is shown such pairs and says which, if
+either, entails the other. Where the general value uses only words of the
+specific one, the two are linked there and then; where the reading rests on
+the model's knowledge of the words ("risky" giving "dangerous"), it becomes
+a question, and a person's yes makes the link — the same rule as the
+hypothesis pass, and the link records who confirmed it.
+
+Linked values stop competing, support for the specific one counts for the
+general one, a denial of the general one counts against the specific one,
+and the disputes recorded while they were taken for rivals are voided:
+kept in the record, left out of the confidence, with the trust they cost
+returned.
 
 An atom is one triple with one scope, and the validator holds proposals to
 that shape. Given "the sky is blue (daytime)" and "the sky is grey

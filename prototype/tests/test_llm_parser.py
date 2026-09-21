@@ -117,7 +117,24 @@ class LLMParserTests(unittest.TestCase):
         self.assertEqual(utt.type, UtteranceType.UNKNOWN)
         self.assertEqual(utt.extra["reason"], "multiple_statements")
 
+    def test_the_persons_own_capitals_are_kept(self):
+        _MOCK["reply"] = _payload(subject="my cat", relation="is called", object="hector")
+        utt = llm_nlu.parse("My cat is called Hector")
+        self.assertEqual((utt.subject, utt.obj), ("My cat", "Hector"))
+
+    def test_a_subject_that_names_nothing_is_refused(self):
+        _MOCK["reply"] = _payload(type="wh_question", subject="how to know", relation="is")
+        utt = llm_nlu.parse("How to know?")
+        self.assertEqual(utt.type, UtteranceType.UNKNOWN)
+
     # ---------------------------------------------- contract violations -> fallback
+    def test_a_word_the_person_never_used_is_a_contract_violation(self):
+        _MOCK["reply"] = _payload(type="negation", subject="No", relation="is", object="yes")
+        utt = llm_nlu.parse("No")
+        self.assertEqual(utt.extra["parser"], "patterns")
+        self.assertIn("does not appear in the input", utt.extra["llm_fallback_reason"])
+        self.assertNotIn(utt.type, (UtteranceType.STATEMENT, UtteranceType.NEGATION))
+
     def test_command_type_rejected_then_pattern_fallback(self):
         _MOCK["reply"] = _payload(type="command", confidence=0.99)
         utt = llm_nlu.parse("the sky is blue")
@@ -155,6 +172,27 @@ class LLMParserTests(unittest.TestCase):
             utt = llm_nlu.parse(cmd)
             self.assertEqual(utt.type, UtteranceType.COMMAND, cmd)
         self.assertEqual(_MOCK["hits"], 0)
+
+    # ---------------------------------------------------------- length limit
+    def test_over_long_input_never_reaches_the_llm(self):
+        from chloe.nlu import MAX_INPUT_CHARS
+        from chloe import nlu
+
+        long_line = "Felix is " + "very " * MAX_INPUT_CHARS + "old"
+        for parse in (llm_nlu.parse, nlu.parse):
+            utt = parse(long_line)
+            self.assertEqual(utt.type, UtteranceType.UNKNOWN)
+            self.assertEqual(utt.extra["reason"], "too_long")
+        self.assertEqual(llm_nlu.parse("sleep").type, UtteranceType.COMMAND)
+        self.assertEqual(_MOCK["hits"], 0)
+
+        # The limit is a maximum, not a threshold: a line of exactly
+        # MAX_INPUT_CHARS is still read.
+        _MOCK["reply"] = _payload(subject="Felix", relation="is", object="a cat",
+                                  confidence=0.9)
+        at_the_limit = "Felix is a cat".ljust(MAX_INPUT_CHARS)
+        self.assertEqual(len(at_the_limit), MAX_INPUT_CHARS)
+        self.assertEqual(llm_nlu.parse(at_the_limit).type, UtteranceType.STATEMENT)
 
     # ------------------------------------------------- engine + storage, end to end
     def test_parse_confidence_lands_in_provenance(self):
@@ -198,6 +236,11 @@ class LLMParserTests(unittest.TestCase):
 
             _MOCK["reply"] = _payload(subject="x", relation="is", object="y", confidence=0.2)
             self.assertIn("won't store it", engine.turn("xish yish?"))
+
+            hits = _MOCK["hits"]
+            self.assertIn("longer than I can read",
+                          engine.turn("Felix is " + "very " * 40 + "old"))
+            self.assertEqual(_MOCK["hits"], hits)  # refused before the LLM
 
             self.assertEqual(store.all_atoms(), [])  # nothing was believed
             store.close()

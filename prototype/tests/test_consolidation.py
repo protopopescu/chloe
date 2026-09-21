@@ -14,8 +14,9 @@ import os
 import tempfile
 import unittest
 
-from chloe import consolidation, llm_client
-from chloe.dialogue import ChloeEngine, QUESTION_PREAMBLE, YES_NO_REASONS
+from chloe import consolidation, llm_client, questions
+from chloe.dialogue import ChloeEngine
+from chloe.questions import REASONS, Kind
 from chloe.models import Atom, AtomStatus, Provenance, RelationProperties
 from chloe.storage import KnowledgeStore
 
@@ -89,6 +90,149 @@ class ConsolidationTestCase(unittest.TestCase):
 
     BLACK_CAT = {"subject": "Felix", "relation": "is", "object": "a black cat",
                  "scope": None, "sources": [1, 2], "confidence": 0.85}
+
+    # ------------------------------------------------------------ merging
+    def test_surface_variants_become_one_belief(self):
+        os.environ.pop("VLLM_BASE_URL", None)
+        kept = self.atom("Cora", "likes", "to cook")
+        self.store.add_provenance(kept.id, Provenance(person_id=2, interaction_id=2, polarity=1))
+        variant = self.atom("cora", "like", "to cook")
+        self.store.queue_question("label", "weak_candidate_recheck", related_atom_id=variant.id)
+
+        report = consolidation.sleep(self.store)
+
+        atoms = self.store.all_atoms()
+        self.assertEqual(len(atoms), 1)
+        self.assertEqual(atoms[0].statement(), "Cora likes to cook", "best-attested wording kept")
+        self.assertEqual(len(atoms[0].provenance), 3)
+        self.assertEqual(atoms[0].status, AtomStatus.CONFIRMED, "status worked out again")
+        self.assertEqual(report.merged, 1)
+        self.assertTrue(all(q["related_atom_id"] == atoms[0].id
+                            for q in self.store.pending_questions()))
+
+    # -------------------------------------------------------- implication
+    def _said(self, name, line):
+        e = ChloeEngine(self.store)
+        e.greet(name)
+        e.turn("no")
+        e.turn(line)
+        return e
+
+    def _implication_model(self, *found):
+        """Answers the implication prompt with `found`, and proposes no
+        hypotheses."""
+        def chat(messages, **kwargs):
+            if "entails" in messages[0]["content"]:
+                return json.dumps({"implications": list(found)})
+            return json.dumps({"hypotheses": []})
+        os.environ["VLLM_BASE_URL"] = "http://stub/v1"
+        llm_client.chat = chat
+
+    def _felix_black_cat(self):
+        self._said("Ben", "Felix is a cat")
+        bob = self._said("Bob", "Felix is a black cat")
+        cat, black = sorted(self.store.all_atoms(), key=lambda a: a.id)
+        self.assertEqual([p.polarity for p in cat.evidence], [1, -1], "taken for a rival at first")
+        return cat, black, bob
+
+    def test_a_value_that_implies_another_is_linked_not_disputed(self):
+        cat, black, bob = self._felix_black_cat()
+        self._implication_model({"pair": 1, "specific": "B", "confidence": 0.95})
+        report = consolidation.sleep(self.store)
+
+        self.assertEqual(report.implications_linked, 1)
+        self.assertTrue(self.store.linked(black.id, cat.id))
+        cat = self.store.atom_by_id(cat.id)
+        voided = [p for p in cat.provenance if p.void]
+        self.assertEqual(len(voided), 1, "the dispute stays in the record")
+        self.assertEqual({(p.person_id, p.polarity) for p in cat.evidence},
+                         {(1, 1), (bob.person.id, 1)}, "Bob's black cat now supports the cat")
+        self.assertAlmostEqual(self.store.person_by_id(bob.person.id).trust_in(), 0.5)
+        self.assertFalse([q for q in self.store.pending_questions() if q["reason"] == "contradiction"
+                          and questions.still_open(self.store, q)])
+
+    def test_a_denial_of_the_general_value_reaches_the_specific_one(self):
+        cat, black, _ = self._felix_black_cat()
+        self._implication_model({"pair": 1, "specific": "B", "confidence": 0.95})
+        consolidation.sleep(self.store)
+        os.environ.pop("VLLM_BASE_URL", None)
+        eve = self._said("Eve", "Felix is not a cat")
+        black = self.store.atom_by_id(black.id)
+        self.assertIn((eve.person.id, -1), {(p.person_id, p.polarity) for p in black.evidence})
+
+    def test_an_implication_the_words_do_not_carry_is_asked_not_made(self):
+        self._felix_black_cat()
+        self._implication_model({"pair": 1, "specific": "A", "confidence": 0.95})   # cat => black cat
+        report = consolidation.sleep(self.store)
+        self.assertEqual(report.implications_linked, 0)
+        [q] = [q for q in self.store.pending_questions() if q["reason"] == "implication"]
+        self.assertEqual(questions.render(self.store, q),
+                         "If Felix is a cat, does that mean Felix is a black cat?")
+
+    def test_the_models_own_knowledge_does_not_link_values(self):
+        self._said("Ann", "Rex is a poodle")
+        self._said("Tom", "Rex is a dog")
+        self._implication_model({"pair": 1, "specific": "A", "confidence": 0.99})
+        report = consolidation.sleep(self.store)
+        self.assertEqual(report.implications_linked, 0)
+        self.assertEqual([q["reason"] for q in self.store.pending_questions()
+                          if q["other_atom_id"]], ["implication"])
+
+    # ------------------------------------------- implication, confirmed by asking
+    def _asked_about_rex(self, name="Eve"):
+        self._said("Ann", "Rex is a poodle")
+        self._said("Tom", "Rex is a dog")
+        self._implication_model({"pair": 1, "specific": "A", "confidence": 0.99})
+        consolidation.sleep(self.store)
+        os.environ.pop("VLLM_BASE_URL", None)
+        asker = ChloeEngine(self.store)
+        asker.greet(name)
+        asker.turn("no")
+        asker.offer_questions()
+        reply = asker.turn("yes")
+        for _ in range(4):                  # step past any recheck of either value
+            if "does that mean" in reply:
+                break
+            self.assertNotIn("which is it", reply, "the choice waits on the implication")
+            reply = asker.turn("yes")
+        self.assertIn("If Rex is a poodle, does that mean Rex is a dog?", reply)
+        return asker
+
+    def _rex(self, obj):
+        return next(a for a in self.store.all_atoms() if a.object == obj)
+
+    def test_yes_makes_the_link_and_records_who_said_so(self):
+        eve = self._asked_about_rex()
+        reply = eve.turn("yes")
+        poodle, dog = self._rex("a poodle"), self._rex("a dog")
+        self.assertIn("I'll take it that Rex is a dog whenever Rex is a poodle", reply)
+        self.assertTrue(self.store.linked(poodle.id, dog.id))
+        row = self.store.conn.execute("SELECT confirmed_by FROM entailments").fetchone()
+        self.assertEqual(row["confirmed_by"], eve.person.id)
+        self.assertFalse([p for p in dog.evidence if p.polarity < 0], "Tom's value is no rival now")
+
+    def test_no_keeps_them_apart_and_is_not_asked_again(self):
+        eve = self._asked_about_rex()
+        self.assertIn("keep the two apart", eve.turn("no"))
+        poodle, dog = self._rex("a poodle"), self._rex("a dog")
+        self.assertFalse(self.store.linked(poodle.id, dog.id))
+        self.assertTrue(self.store.judged(poodle.id, dog.id))
+        self._implication_model({"pair": 1, "specific": "A", "confidence": 0.99})
+        consolidation.sleep(self.store)
+        self.assertFalse([q for q in self.store.pending_questions() if q["reason"] == "implication"])
+
+    def test_which_is_it_is_asked_once_the_implication_is_refused(self):
+        eve = self._asked_about_rex()
+        reply = eve.turn("no")
+        self.assertIn("keep the two apart", reply)
+        for _ in range(4):
+            if "which is it" in reply:
+                break
+            reply = eve.turn("yes")
+        self.assertIn("whether Rex is a poodle or a dog -- which is it?", reply)
+
+    def test_the_people_who_stated_the_values_may_be_asked(self):
+        self._asked_about_rex(name="Ann")
 
     # -------------------------------------------------------- the good case
     def test_conjunction_the_rules_cannot_reach(self):
@@ -322,7 +466,7 @@ class ConsolidationTestCase(unittest.TestCase):
                 break
             question = dan.turn("no")
         self.assertIn("Felix is a black cat", question)
-        self.assertIn(QUESTION_PREAMBLE["llm_hypothesis"], question)
+        self.assertIn(REASONS["llm_hypothesis"].preamble, question)
 
         dan.turn("yes")
         settled = [a for a in self.store.all_atoms() if a.id == hyp_id][0]
@@ -330,8 +474,7 @@ class ConsolidationTestCase(unittest.TestCase):
         self.assertTrue(settled.provenance)
 
     def test_the_reason_is_answerable_by_yes_or_no(self):
-        self.assertIn("llm_hypothesis", YES_NO_REASONS)
-        self.assertIn("llm_hypothesis", QUESTION_PREAMBLE)
+        self.assertEqual(REASONS["llm_hypothesis"].kind, Kind.CONFIRM)
 
 
 if __name__ == "__main__":

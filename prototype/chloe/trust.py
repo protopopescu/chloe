@@ -36,6 +36,12 @@ def update_trust_on_contradiction(person: Person, domain: str) -> None:
     person.set_trust(current - LEARNING_RATE * current, domain)
 
 
+def undo_contradiction(person: Person, domain: str) -> None:
+    """The inverse of update_trust_on_contradiction at the current value, for
+    a dispute found afterwards to have been no disagreement at all."""
+    person.set_trust(person.trust_in(domain) / (1.0 - LEARNING_RATE), domain)
+
+
 def recompute_confidence(atom: Atom, people_by_id: dict) -> float:
     """Trust-weighted vote, damped by how much evidence stands behind it.
 
@@ -48,12 +54,12 @@ def recompute_confidence(atom: Atom, people_by_id: dict) -> float:
     Undamped, a normalised vote reaches its extremes on unanimity alone,
     however little the agreeing sources are trusted.
     """
-    if not atom.provenance:
+    if not atom.evidence:
         return atom.confidence
 
     score = 0.0
     weight_total = 0.0
-    for prov in atom.provenance:
+    for prov in atom.evidence:
         person = people_by_id.get(prov.person_id)
         trust = person.trust_in(atom.domain) if person else 0.5
         score += prov.polarity * trust
