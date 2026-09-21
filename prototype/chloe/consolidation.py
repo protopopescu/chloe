@@ -8,8 +8,7 @@ evidence; sleep produces understanding.
 
 This pass runs over everything currently in the KnowledgeStore. It is
 triggered by the "sleep" command in dialogue.py, and on a schedule in the
-web deployment -- a distinct offline phase, as in the original design,
-without an actual process restart.
+web deployment -- a distinct offline phase, without a process restart.
 
 New ideas come from two passes that do different jobs.
 _generate_hypotheses derives what *follows*, using only relation properties
@@ -32,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from . import entailment, grammar, llm_client, questions, trust as trust_mod
-from .models import Atom, AtomStatus
+from .models import Atom, AtomStatus, Person
 # Reused rather than re-implemented: the reply contract for a JSON-returning
 # model is the same one the input parser enforces -- validate, never repair.
 from .llm_nlu import BadParse, _clean_field, _extract_json
@@ -93,11 +92,13 @@ def sleep(store) -> SleepReport:
     report = SleepReport()
     people_by_id = {p.id: p for p in store.all_people()}
 
+    _apply_coreference(store, report)
     _merge_duplicates(store, report, people_by_id)
     _link_implications(store, report)
     _flag_contradictions(store, report)
     _generate_hypotheses(store, report, people_by_id)
     _generate_hypotheses_llm(store, report)
+    _propose_coreference(store, report)
     _queue_verification_for_weak_atoms(store, report)
 
     return report
@@ -109,6 +110,34 @@ def _norm_relation(rel: str) -> str:
 
 def _signature(subject: str, relation: str, obj: str) -> tuple:
     return grammar.identity(subject, relation, obj)[:3]
+
+
+def _apply_coreference(store, report: SleepReport) -> None:
+    """Move what is held about one subject onto another, where somebody has
+    confirmed that the two name one thing. The proposal comes from an earlier
+    sleep and is put to a person first (questions "coreference"), so nothing
+    moves on the model's reading alone. Duplicates fold in the pass below."""
+    for q in store.questions_by_reason("coreference"):
+        atom = store.atom_by_id(q.get("related_atom_id"))
+        if atom is None or atom.status == AtomStatus.HYPOTHESIS:
+            continue
+        people = {p.id: p for p in store.all_people()}
+        if not any(prov.polarity > 0 and not questions.names_person(atom, people.get(prov.person_id))
+                   for prov in atom.evidence):
+            continue    # only somebody who is not the one being identified
+        alias, canonical = atom.subject, atom.object
+        if grammar.same_referent(alias, canonical):
+            continue
+        moved = 0
+        for other in store.find_atoms_about(alias):
+            if other.id == atom.id:
+                continue
+            other.subject = canonical
+            store.save_atom(other)
+            moved += 1
+        if moved:
+            report.details.append(
+                f"  '{alias}' and '{canonical}' are one: {moved} belief(s) moved")
 
 
 def _merge_duplicates(store, report: SleepReport, people_by_id: dict) -> None:
@@ -311,8 +340,11 @@ def _generate_hypotheses_llm(store, report: SleepReport) -> None:
     if not llm_client.is_configured():
         return
 
+    # A name CHLOE could not confirm carries its mark in the subject, and a
+    # model shown it reads the mark as a word like any other.
     stated = [a for a in store.all_atoms()
-              if a.status in (AtomStatus.CANDIDATE, AtomStatus.CONFIRMED)]
+              if a.status in (AtomStatus.CANDIDATE, AtomStatus.CONFIRMED)
+              and not a.subject.endswith(Person.UNVERIFIED_SUFFIX)]
     if len(stated) < 2:
         return
     stated.sort(key=lambda a: a.updated_at, reverse=True)
@@ -518,6 +550,126 @@ def _validated_hypothesis(cand, by_id: Dict[int, Atom],
         domain=cited[0].domain, status=AtomStatus.HYPOTHESIS,
         confidence=round(floor * HYPOTHESIS_DAMPING, 4),
     ), None
+
+
+# ------------------------------------------------------ coreference
+
+_COREFERENCE_SYSTEM_PROMPT = """\
+You are part of the consolidation step of CHLOE, a knowledge system that
+stores what people tell it as subject-relation-object triples. You are shown
+numbered pairs of subjects, each with what CHLOE has been told about it. For
+each pair, decide whether the two are two names for one and the same thing.
+
+CHLOE writes "(unverified)" after a name somebody claimed and could not
+confirm, so "Cora (unverified)" and "Cora" may well be one person. "Felix"
+and "Hector" are two names for two different cats. Subjects that merely
+resemble one another, or that could both be true of one thing without being
+it, are not the same thing.
+
+Return ONLY a JSON object, no prose and no code fences:
+{"same": [{"pair": <number>, "canonical": "A" or "B", "confidence": <number 0-1>}]}
+"canonical" is the name worth keeping, the fuller or more settled of the two.
+List only pairs that name one thing. If there are none, return {"same": []}.
+"""
+
+
+def _propose_coreference(store, report: SleepReport) -> None:
+    """Ask the model which subjects name one thing, and put each proposal to
+    a person. Nothing here merges anything: the proposal is a HYPOTHESIS atom
+    and a queued question, and _apply_coreference acts only once somebody who
+    is not the subject of it has said yes."""
+    if not llm_client.is_configured():
+        return
+    pairs = _coreference_candidates(store)
+    if not pairs:
+        return
+    listing = "\n".join(f"{n}. A: {a}\n   {_subject_listing(store, a)}\n"
+                        f"   B: {b}\n   {_subject_listing(store, b)}"
+                        for n, (a, b) in enumerate(pairs, 1))
+    try:
+        payload = _extract_json(llm_client.chat(
+            [{"role": "system", "content": _COREFERENCE_SYSTEM_PROMPT},
+             {"role": "user", "content": "Pairs:\n" + listing}],
+            temperature=0.0, max_tokens=400,
+        ))
+    except (llm_client.LLMUnavailable, BadParse) as e:
+        report.details.append(f"  no coreference from the model: {e}")
+        return
+    found = payload.get("same")
+    if not isinstance(found, list):
+        report.details.append("  no coreference from the model: reply carried no 'same' list")
+        return
+    for item in found:
+        proposal, refusal = _validated_coreference(item, pairs)
+        if proposal is None:
+            report.details.append(f"  coreference refused: {refusal}")
+            continue
+        alias, canonical = proposal
+        hyp = store.save_atom(Atom(id=None, subject=alias, relation="is", object=canonical,
+                                   status=AtomStatus.HYPOTHESIS,
+                                   confidence=_coreference_floor(store, alias, canonical)))
+        report.hypotheses_generated += 1
+        report.details.append(f"  asking whether '{alias}' and '{canonical}' are one")
+        if questions.queue(store, "coreference", hyp):
+            report.verification_questions_queued += 1
+
+
+def _subjects(store) -> Dict[str, List[Atom]]:
+    """Stated beliefs, by the subject they are about."""
+    by_subject: Dict[str, List[Atom]] = {}
+    for atom in store.all_atoms():
+        if atom.status in (AtomStatus.CANDIDATE, AtomStatus.CONFIRMED):
+            by_subject.setdefault(atom.subject, []).append(atom)
+    return by_subject
+
+
+def _coreference_candidates(store) -> List[Tuple[str, str]]:
+    """Pairs of subjects worth asking about: two spellings sharing a word,
+    with neither the question nor the belief already on file. Sharing a word
+    bounds what the model is shown and settles nothing -- two names for one
+    thing that share no word ("Bob", "Robert") are not reached this way."""
+    by_subject = _subjects(store)
+    existing = {_signature(a.subject, a.relation, a.object) for a in store.all_atoms()}
+    names = sorted(by_subject)
+    pairs = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if grammar.same_referent(a, b) or not (grammar.vocabulary([a]) & grammar.vocabulary([b])):
+                continue
+            if any(_signature(x, "is", y) in existing for x, y in ((a, b), (b, a))):
+                continue
+            pairs.append((a, b))
+    return pairs[:MAX_LLM_CONTEXT_ATOMS]
+
+
+def _subject_listing(store, subject: str) -> str:
+    atoms = _subjects(store).get(subject, [])
+    return "; ".join(f"{a.relation} {a.object}" for a in atoms[:5]) or "nothing on file"
+
+
+def _coreference_floor(store, alias: str, canonical: str) -> float:
+    """A proposal is no more confident than the beliefs that suggested it."""
+    by_subject = _subjects(store)
+    held = by_subject.get(alias, []) + by_subject.get(canonical, [])
+    return round(min([a.confidence for a in held] or [0.5]) * HYPOTHESIS_DAMPING, 4)
+
+
+def _validated_coreference(item, pairs) -> Tuple[Optional[Tuple[str, str]], Optional[str]]:
+    """A proposal checked against the contract: (alias, canonical), or None
+    and the reason it was refused."""
+    if not isinstance(item, dict):
+        return None, "reply contained something that is not a pair"
+    n, side, confidence = item.get("pair"), item.get("canonical"), item.get("confidence")
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= len(pairs):
+        return None, f"pair {n!r} was not one of those shown"
+    if side not in ("A", "B"):
+        return None, f"pair {n}: 'canonical' must be A or B, not {side!r}"
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) \
+            or float(confidence) < MIN_LLM_HYPOTHESIS_CONFIDENCE:
+        return None, f"pair {n}: confidence {confidence!r} is missing or below the floor"
+    a, b = pairs[n - 1]
+    canonical, alias = (a, b) if side == "A" else (b, a)
+    return (alias, canonical), None
 
 
 def _queue_verification_for_weak_atoms(store, report: SleepReport) -> None:

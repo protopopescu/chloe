@@ -43,6 +43,15 @@ def rivals(store, atom: Atom) -> List[Atom]:
             and (atom.id is None or a.id == atom.id or not store.linked(a.id, atom.id))]
 
 
+def names_person(atom: Optional[Atom], person: Person) -> bool:
+    """Whether an atom is about this person under either of their names.
+    Which self somebody is is the one thing their own word cannot settle,
+    so a proposal that names them is not put to them."""
+    if atom is None or person is None:
+        return True
+    return any(person.claims(side) for side in (atom.subject, atom.object))
+
+
 @dataclass(frozen=True)
 class Reason:
     kind: Kind
@@ -83,6 +92,13 @@ REASONS = {
     "unknown_term": Reason(
         Kind.DEFINE, "This one is a blank for me",
         lambda store, atom, term, other: bool(term) and not store.find_atoms_about(term)),
+    # The LLM proposed that two subjects name one thing. Nobody has said so,
+    # and the claimant cannot say it of themselves (for_person), so the
+    # proposal waits for someone else.
+    "coreference": Reason(
+        Kind.CONFIRM, "These might be two names for one thing, though nobody has told me so",
+        _is(AtomStatus.HYPOTHESIS),
+        ask="Am I right that {clause} -- two names for the same thing?"),
     # The LLM proposed that one stated value implies another, but the words
     # alone do not carry it ("risky" -> "dangerous"). Its reading of the
     # words is a conjecture like any other, and a person settles it.
@@ -130,14 +146,15 @@ def for_person(store, q: dict, person: Person) -> bool:
     question exists precisely to go back to its source -- and then only
     once: a source who has confirmed it again is not asked a third time."""
     r = reason_of(q)
+    if q.get("reason") == "coreference":
+        return not names_person(store.atom_by_id(q.get("related_atom_id")), person)
     if r is None or r.kind in (Kind.DEFINE, Kind.IMPLY):
         return True     # about words, not about a belief anyone gave evidence on
     atom = store.atom_by_id(q.get("related_atom_id"))
     if atom is None:
         return False
-    involved = {a.id for a in ([atom] + (rivals(store, atom) if r.kind == Kind.CHOOSE else []))}
-    mine = [p for a in store.all_atoms() if a.id in involved for p in a.evidence
-            if p.person_id == person.id]
+    involved = [atom] + (rivals(store, atom) if r.kind == Kind.CHOOSE else [])
+    mine = [p for a in involved for p in a.evidence if p.person_id == person.id]
     return not mine or (r.sources_may_answer and len(mine) == 1)
 
 

@@ -114,10 +114,14 @@ class ChloeEngine:
         self._current_question: Optional[dict] = None
         self._questions_declined = False   # honoured for the rest of the session
         self.last_stance: Optional[Stance] = None     # stance of the last reply, for the output-side guard
-        # The question this turn put to the person, if any. It closes the
-        # reply, and the output interface passes it through unphrased: it is
-        # what the person's next answer will be recorded against.
+        # The question this turn put to the person, if any: what their next
+        # answer will be recorded against.
         self.last_question: Optional[str] = None
+        # The end of this turn's reply that the output interface passes
+        # through unphrased -- a question, or a list of beliefs. A phrasing
+        # may drop one item of a list and still satisfy the reply contract,
+        # which checks names and numbers rather than propositions.
+        self.last_verbatim: Optional[str] = None
 
     # ------------------------------------------------------------- greeting
     def greet(self, name: str) -> str:
@@ -153,7 +157,7 @@ class ChloeEngine:
             return reply
 
         self.person = existing
-        seen_before = any(p.person_id == self.person.id for a in self.store.all_atoms() for p in a.provenance)
+        seen_before = self.store.has_evidence_from(self.person.id)
         reply = (f"Hi! I am Chloe. Nice to talk to you again, {name}." if seen_before
                  else f"Hi! I am Chloe. Hello, {name}.")
         self._log(ROLE_CHLOE, reply)
@@ -233,6 +237,7 @@ class ChloeEngine:
         """Process one line of human input, return Chloe's reply."""
         self.last_stance = None   # this turn's stance, set by whatever answers
         self.last_question = None
+        self.last_verbatim = None
         if self.auth_state == AuthState.AWAITING_SECRET_CHOICE:
             return self._handle_secret_choice(text)
         if self.auth_state == AuthState.AWAITING_SECRET_VALUE:
@@ -321,10 +326,6 @@ class ChloeEngine:
         """A pleasantry is not evidence, and not a failure to understand
         either. She answers it and writes nothing: the language layer may
         converse freely precisely because nothing it says reaches the store.
-
-        The 2000 version picked from a short list for its own stock replies
-        (cMisc.hh); with a language model configured, this text is what gets
-        phrased naturally on the way out.
         """
         openers = ("hello", "hi", "hey", "greetings", "good morning",
                    "good afternoon", "good evening", "good day")
@@ -340,7 +341,7 @@ class ChloeEngine:
             name = self.person.name if self.person else "there"
             return f"Hello, {name}. Tell me something, or ask me what I know."
         if "how are" in low:
-            known = len(self.store.all_atoms())
+            known = self.store.count_atoms()
             if known:
                 plural = "" if known == 1 else "s"
                 return (f"I'm well, thank you -- {known} thing{plural} on file at the moment, "
@@ -365,11 +366,8 @@ class ChloeEngine:
     def sleep(self) -> str:
         """Consolidate, then wake with whatever that turned up.
 
-        The 2000 version treated "Sleep" as the end of the session: it
-        persisted state, said goodbye and exited, and chloe.sh brought it
-        back. Here the pass is the same idea without the process restart,
-        and waking is where the questions consolidation produced get put to
-        somebody -- which is the point of having slept.
+        Waking is where the questions consolidation produced get put to
+        somebody, which is the point of having slept.
         """
         from . import consolidation
         summary = consolidation.sleep(self.store).summary()
@@ -416,10 +414,10 @@ class ChloeEngine:
 
     def _put(self, q: dict) -> str:
         """Put a question on the table; returns it as said to this person.
-        Whatever reply carries it must end with it (see last_question)."""
+        Whatever reply carries it must end with it (see last_verbatim)."""
         self._current_question = q
         self.question_state = QuestionState.AWAITING_ANSWER
-        self.last_question = self._render(q)
+        self.last_question = self.last_verbatim = self._render(q)
         return self.last_question
 
     def _render(self, q: dict) -> str:
@@ -560,9 +558,9 @@ class ChloeEngine:
             if polarity > 0 and utt is not None:
                 return self._vacuous_reply(utt)
             return f"Nothing can fail to be itself, so I won't record that about {subject}."
-        if self.person.is_unverified and grammar.refers_to(subject, self.person.name):
-            claimed = self.person.name[:-len(Person.UNVERIFIED_SUFFIX)]
-            return f"I can't be sure you're {claimed}, so I won't note anything about you yet."
+        if self.person.is_unverified and self.person.claims(subject):
+            return (f"I can't be sure you're {self.person.claimed_name}, "
+                    f"so I won't note anything about you yet.")
 
         low = grammar.norm_phrase(obj)
         if low.startswith("not "):
@@ -692,7 +690,8 @@ class ChloeEngine:
         best, rest = candidates[0], candidates[1:]
         reply = f"{grammar.capitalise(self._say_atom(best))} (confidence {best.confidence:.2f})."
         if rest:
-            reply += " " + self._also(utt.subject, rest)
+            self.last_verbatim = self._also(utt.subject, rest)
+            reply += " " + self.last_verbatim
         return reply
 
     def _also(self, subject: str, atoms: list) -> str:

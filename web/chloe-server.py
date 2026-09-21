@@ -605,17 +605,18 @@ def handle_chat(payload: dict, client: Optional[str] = None) -> dict:
         ground_truth = engine.turn(message)
         # Read inside the lock: it belongs to the turn just taken.
         stance = engine.last_stance
-        question = engine.last_question
+        verbatim = engine.last_verbatim
 
     if _is_dreaming():
         # The turn put CHLOE to sleep: said as it stands, and the browser
         # shows the sleeping state.
         return {"session_id": session_id, "reply": ground_truth, "dreaming": True, "llm_used": False}
 
-    # A question CHLOE has just put goes out in the core's words: the
-    # person's next "yes" or "no" is recorded against it, so it must reach
-    # them as the question it is. Only what comes before it is phrased.
-    to_phrase, kept = persona.question_to_keep(ground_truth, question)
+    # What the core marked goes out in its own words: a question, because
+    # the person's next "yes" or "no" is recorded against it, or a list of
+    # beliefs, because a phrasing may quietly drop one. Only what comes
+    # before it is phrased.
+    to_phrase, kept = persona.split_verbatim(ground_truth, verbatim)
     phrased = to_phrase
     llm_used = False
     rejected = None

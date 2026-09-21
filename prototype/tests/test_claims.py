@@ -136,6 +136,13 @@ class ClaimTests(unittest.TestCase):
         impostor.turn("my cat is black")
         self.assertEqual(self.store.all_atoms(), [])
 
+    def test_an_unverified_claim_under_the_claimed_name_is_not_stored_either(self):
+        impostor = self._unverified_cora()
+        reply = impostor.turn("Cora is a computer scientist")
+        self.assertIn("can't be sure you're Cora", reply)
+        self.assertEqual(self.store.all_atoms(), [], "naming herself in the third person "
+                                                     "is the same claim")
+
     def test_an_unverified_person_is_still_a_source_about_others(self):
         impostor = self._unverified_cora()
         impostor.turn("Felix is a cat")

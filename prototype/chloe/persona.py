@@ -15,9 +15,11 @@ the core never supplied, or leaves out a name it did, is rejected in favour of
 the engine's own text -- the same fallback taken when the server is
 unreachable.
 
-CHLOE's own questions are not phrased at all. A question put to the person
-is what their next answer will be recorded against, so it reaches them in
-the core's words (question_to_keep, and the server's use of it).
+Some of what the core writes is not phrased at all. A question put to the
+person is what their next answer will be recorded against, and a list of
+beliefs is one item per belief, which the checks below do not count. Both
+reach the person in the core's words (split_verbatim, and the server's use
+of it).
 
 The last two checks are the ones that matter most. A model with general
 knowledge will otherwise settle a question the core deliberately left open
@@ -334,17 +336,17 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     return None
 
 
-def question_to_keep(ground_truth_reply: str, question: str):
+def split_verbatim(ground_truth_reply: str, verbatim: str):
     """Split the core's reply into the part the model may phrase and the
-    question CHLOE has just put, which it may not.
+    part it may not.
 
-    Returns (to_phrase, question). `to_phrase` may be empty -- a reply that
+    Returns (to_phrase, verbatim). `to_phrase` may be empty -- a reply that
     is only a question has nothing to phrase. When the reply does not end
-    with the question it names, nothing is phrased at all: the whole reply
-    goes out as the core wrote it, since the split cannot be trusted."""
-    if not question:
+    with the text it names, nothing is phrased at all: the whole reply goes
+    out as the core wrote it, since the split cannot be trusted."""
+    if not verbatim:
         return ground_truth_reply, ""
     text = ground_truth_reply.rstrip()
-    if not text.endswith(question):
+    if not text.endswith(verbatim):
         return "", text
-    return text[: -len(question)].rstrip(), question
+    return text[: -len(verbatim)].rstrip(), verbatim

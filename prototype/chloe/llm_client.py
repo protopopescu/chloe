@@ -1,9 +1,9 @@
 """
 Minimal client for an OpenAI-compatible chat-completions endpoint (vLLM).
 
-The output-side linguistic interface: the engine decides the facts, this
-turns its factual reply into something that reads like conversation.
-llm_nlu.py is the mirror image on the input side.
+The transport both linguistic interfaces use, and the consolidation passes
+with them: llm_nlu.py reads input through it, persona.py phrases replies
+through it, consolidation.py puts its proposals through it.
 
 Stdlib only (urllib). Configured entirely through environment
 variables; with VLLM_BASE_URL unset it makes no requests at all.

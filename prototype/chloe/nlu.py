@@ -36,7 +36,6 @@ _SCOPE_SPLIT = re.compile(r"\bwhen\b|\bif\b", re.IGNORECASE)
 # It also keeps the LLM from ever being handed a long block of text.
 MAX_INPUT_CHARS = int(os.getenv("CHLOE_MAX_INPUT_CHARS", "128"))
 
-_COPULAS = ("is", "are", "am", "was", "were", "means", "means that")
 _DETERMINERS = ("a", "an", "the")
 
 # Direct address stripped before classification, e.g. "Hi Chloe," or

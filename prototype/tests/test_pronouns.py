@@ -51,6 +51,15 @@ class GrammarUnitTests(unittest.TestCase):
         self.assertEqual(grammar.accord_verb("likes", "you"), "like")
         self.assertEqual(grammar.accord_verb("has", "I"), "have")
         self.assertEqual(grammar.accord_verb("was", "you"), "were")
+        self.assertEqual(grammar.accord_verb("means", "you"), "mean")
+        self.assertEqual(grammar.accord_verb("lives in", "you"), "live in")
+
+    def test_third_person(self):
+        for stored, expected in (("am", "is"), ("are", "is"), ("were", "was"),
+                                 ("like", "likes"), ("have", "has"), ("try", "tries"),
+                                 ("teach", "teaches"), ("likes", "likes"),
+                                 ("live in", "lives in")):
+            self.assertEqual(grammar.third_person(stored), expected)
 
     def test_clause_agrees(self):
         self.assertEqual(grammar.clause("Dan", "is", "a person", speaker="Dan"),

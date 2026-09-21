@@ -71,6 +71,19 @@ class Person:
     def is_unverified(self) -> bool:
         return self.name.endswith(self.UNVERIFIED_SUFFIX)
 
+    @property
+    def claimed_name(self) -> str:
+        """The name without the mark, for someone whose claim to it is not
+        settled. Their own name for anyone else."""
+        return self.name[:-len(self.UNVERIFIED_SUFFIX)] if self.is_unverified else self.name
+
+    def claims(self, subject: str) -> bool:
+        """Whether a subject is about this person, under the name they hold
+        or the one they gave. Which of the two they are is what an unverified
+        identity leaves open, so both are claims about themselves."""
+        return any(grammar.refers_to(subject, name)
+                   for name in {self.name, self.claimed_name})
+
     def trust_in(self, domain: Optional[str] = None) -> float:
         domain = domain or self.DEFAULT_DOMAIN
         return self.trust.get(domain, self.trust.get(self.DEFAULT_DOMAIN, self.DEFAULT_TRUST))

@@ -285,16 +285,16 @@ class QuestionKeptTests(unittest.TestCase):
 
     def test_the_question_is_split_off_unphrased(self):
         head = "Good, that matches what I already believed: Hector is a cat."
-        self.assertEqual(persona.question_to_keep(f"{head}\n{self.ASK}", self.ASK), (head, self.ASK))
+        self.assertEqual(persona.split_verbatim(f"{head}\n{self.ASK}", self.ASK), (head, self.ASK))
 
     def test_a_reply_that_is_only_a_question_has_nothing_to_phrase(self):
-        self.assertEqual(persona.question_to_keep(self.ASK, self.ASK), ("", self.ASK))
+        self.assertEqual(persona.split_verbatim(self.ASK, self.ASK), ("", self.ASK))
 
     def test_no_question_means_everything_may_be_phrased(self):
-        self.assertEqual(persona.question_to_keep("Okay.", None), ("Okay.", ""))
+        self.assertEqual(persona.split_verbatim("Okay.", None), ("Okay.", ""))
 
     def test_a_split_that_does_not_fit_phrases_nothing(self):
-        self.assertEqual(persona.question_to_keep("Something else entirely.", self.ASK),
+        self.assertEqual(persona.split_verbatim("Something else entirely.", self.ASK),
                          ("", "Something else entirely."))
 
 
@@ -317,13 +317,14 @@ class EngineQuestionTests(unittest.TestCase):
     def test_the_first_question_is_the_whole_reply(self):
         reply = self.eve.turn("yes")
         self.assertEqual(reply, self.eve.last_question)
+        self.assertEqual(reply, self.eve.last_verbatim)
 
     def test_an_answer_carries_the_next_question_last(self):
         self.eve.turn("yes")
         reply = self.eve.turn("yes")
         self.assertTrue(self.eve.last_question)
         self.assertTrue(reply.endswith(self.eve.last_question))
-        head, kept = persona.question_to_keep(reply, self.eve.last_question)
+        head, kept = persona.split_verbatim(reply, self.eve.last_question)
         self.assertTrue(head.startswith("Good"))
         self.assertTrue(kept.endswith("?"))
 
@@ -331,6 +332,16 @@ class EngineQuestionTests(unittest.TestCase):
         self.eve.turn("yes")
         self.eve.turn("stop")
         self.assertIsNone(self.eve.last_question, "a stale question must not carry over")
+        self.assertIsNone(self.eve.last_verbatim)
+
+    def test_a_list_of_beliefs_is_not_phrased(self):
+        for fact in ("Cora is a runner", "Cora is a cook", "Cora is John's friend"):
+            self.eve.turn(fact)
+        reply = self.eve.turn("who is Cora?")
+        kept = self.eve.last_verbatim
+        self.assertTrue(kept.startswith("I also know that"))
+        self.assertEqual(persona.split_verbatim(reply, kept),
+                         (reply[: -len(kept)].rstrip(), kept))
 
 
 if __name__ == "__main__":

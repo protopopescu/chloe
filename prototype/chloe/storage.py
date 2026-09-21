@@ -1,13 +1,9 @@
 """
 SQLite-backed knowledge store.
 
-The 2000 version stored everything in flat per-letter text files
-(dict/*.cw, xref/*.xr) rewritten wholesale on every update, which the
-original notes already listed as a scaling obstacle. SQLite gives
-durability and queryability while staying a single dependency-free file --
-the smallest upgrade that keeps this a prototype rather than an
-infrastructure build-out. Swapping this module
-for a real graph database later would not require changing the models.
+A single dependency-free file, holding the atoms, their provenance, the
+people, the entailments and the open questions. Swapping this module for a
+real graph database later would not require changing the models.
 """
 
 import hashlib
@@ -369,26 +365,44 @@ class KnowledgeStore:
 
     def provenance_for(self, atom_id: int) -> list:
         rows = self.conn.execute("SELECT * FROM provenance WHERE atom_id = ? ORDER BY at, id", (atom_id,)).fetchall()
-        return [
-            Provenance(
-                person_id=r["person_id"], interaction_id=r["interaction_id"], polarity=r["polarity"],
-                at=r["at"], parse_confidence=r["parse_confidence"],
-                via_atom_id=r["via_atom_id"], void=bool(r["void"]),
-            )
-            for r in rows
-        ]
+        return [self._row_to_provenance(r) for r in rows]
+
+    def _row_to_provenance(self, row) -> Provenance:
+        return Provenance(
+            person_id=row["person_id"], interaction_id=row["interaction_id"], polarity=row["polarity"],
+            at=row["at"], parse_confidence=row["parse_confidence"],
+            via_atom_id=row["via_atom_id"], void=bool(row["void"]),
+        )
+
+    def count_atoms(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0]
+
+    def has_evidence_from(self, person_id: int) -> bool:
+        """Whether this person has ever been a source."""
+        return self.conn.execute("SELECT 1 FROM provenance WHERE person_id = ? LIMIT 1",
+                                 (person_id,)).fetchone() is not None
 
     def all_atoms(self) -> list:
-        rows = self.conn.execute("SELECT * FROM atoms").fetchall()
-        return [self._row_to_atom(r) for r in rows]
+        """Every atom, with its provenance, in two queries rather than one
+        per atom -- the sleep passes read the whole store."""
+        by_atom = {}
+        for row in self.conn.execute("SELECT * FROM provenance ORDER BY at, id"):
+            by_atom.setdefault(row["atom_id"], []).append(self._row_to_provenance(row))
+        atoms = []
+        for row in self.conn.execute("SELECT * FROM atoms").fetchall():
+            atom = self._row_to_atom(row, provenance=None)
+            atom.provenance = by_atom.get(atom.id, [])
+            atoms.append(atom)
+        return atoms
 
-    def _row_to_atom(self, row) -> Atom:
+    def _row_to_atom(self, row, provenance: bool = True) -> Atom:
         atom = Atom(
             id=row["id"], subject=row["subject"], relation=row["relation"], object=row["object"],
             scope=row["scope"], domain=row["domain"], status=AtomStatus(row["status"]),
             confidence=row["confidence"], created_at=row["created_at"], updated_at=row["updated_at"],
         )
-        atom.provenance = self.provenance_for(atom.id)
+        if provenance:
+            atom.provenance = self.provenance_for(atom.id)
         return atom
 
     # -------------------------------------------------------------- relations
@@ -461,6 +475,13 @@ class KnowledgeStore:
             "UPDATE open_questions SET answered = 1, asked = 1 WHERE id = ?", (question_id,)
         )
         self.conn.commit()
+
+    def questions_by_reason(self, reason: str) -> list:
+        """Every question opened for this reason, answered or not. The row
+        records what the question was about, which outlives the asking."""
+        rows = self.conn.execute(
+            "SELECT * FROM open_questions WHERE reason = ? ORDER BY id", (reason,)).fetchall()
+        return [dict(r) for r in rows]
 
     def pending_questions(self) -> list:
         """Everything still open, in queue order: never asked first."""

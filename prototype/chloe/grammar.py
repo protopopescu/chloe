@@ -81,10 +81,10 @@ def is_pronoun(text: str) -> bool:
 def resolve_referents(utt, speaker: str):
     """Resolve pronouns in an Utterance in place, and return it.
 
-    A copula agreed with a pronoun subject ("I am", "you are") is stored in
-    its third-person form, so that "I am a person" and "Dan is a person"
-    reach the same atom. Third-person "are" is left alone: "cats are
-    animals" is plural, not a mis-agreed singular.
+    A verb agreed with a pronoun subject ("I am", "I like") is stored in its
+    third-person form, so that "I am a person" and "Dan is a person" reach
+    the same atom. A subject that was not a pronoun is left alone: "cats are
+    animals" is plural, and no form of it is a mis-agreed singular.
     """
     if not speaker:
         return utt
@@ -95,8 +95,8 @@ def resolve_referents(utt, speaker: str):
     utt.obj = resolve_text(utt.obj, speaker) if utt.obj else utt.obj
     utt.scope = resolve_text(utt.scope, speaker) if utt.scope else utt.scope
 
-    if subject_was_pronoun and (utt.relation or "").lower() in ("am", "are"):
-        utt.relation = "is"
+    if subject_was_pronoun and utt.relation:
+        utt.relation = third_person(utt.relation)
 
     return utt
 
@@ -142,20 +142,75 @@ _COPULA_PRESENT = {"is", "are", "am"}
 _COPULA_PAST = {"was", "were"}
 
 
+_IRREGULAR_BASE = {"has": "have", "does": "do", "goes": "go"}
+_IRREGULAR_THIRD = {v: k for k, v in _IRREGULAR_BASE.items()}
+
+
+def _head(relation: str):
+    """A relation split into the verb that heads it and whatever follows
+    ("lives in" -> "lives", " in"). Only the head inflects."""
+    text = (relation or "").strip()
+    head, sep, rest = text.partition(" ")
+    return head, sep + rest
+
+
+def _base(verb: str) -> str:
+    """A verb with its third-person -s removed."""
+    low = verb.lower()
+    if low in _IRREGULAR_BASE:
+        return _IRREGULAR_BASE[low]
+    if len(low) > 4 and low.endswith("ies"):
+        return low[:-3] + "y"
+    if len(low) > 3 and low.endswith(("sses", "shes", "ches", "xes", "zes", "oes")):
+        return low[:-2]
+    if len(low) > 2 and low.endswith("s") and not low.endswith(("ss", "us", "is")):
+        return low[:-1]
+    return low
+
+
+def _third(verb: str) -> str:
+    """A verb in its third-person singular form."""
+    low = verb.lower()
+    if low in _IRREGULAR_THIRD:
+        return _IRREGULAR_THIRD[low]
+    if low.endswith("s") and not low.endswith(("ss", "us")):
+        return low
+    if len(low) > 2 and low.endswith("y") and low[-2] not in "aeiou":
+        return low[:-1] + "ies"
+    if low.endswith(("s", "sh", "ch", "x", "z", "o")):
+        return low + "es"
+    return low + "s"
+
+
+def third_person(relation: str) -> str:
+    """A relation as it is stored: the form it takes with a named subject.
+    "I am a physicist" and "I like tea", once the subject is resolved to a
+    name, are "Dan is a physicist" and "Dan likes tea"."""
+    head, rest = _head(relation)
+    low = head.lower()
+    if low in _COPULA_PRESENT:
+        return "is" + rest
+    if low in _COPULA_PAST:
+        return "was" + rest
+    return _third(_base(low)) + rest
+
+
 def accord_verb(verb: str, pronoun: str) -> str:
     """cGrammar.hh AccordTheVerb(): agree a verb with the pronoun in front of
-    it. A copula takes that person's form and keeps its tense. Any other verb
-    is marked only for the third person. Anything that is not a
-    first/second-person pronoun keeps the verb as stored."""
+    it. A copula takes that person's form and keeps its tense, and any other
+    verb loses its third-person -s. Anything that is not a first/second-person
+    pronoun keeps the verb as stored, since a third-person subject may be
+    plural ("cats are animals")."""
     low = (pronoun or "").strip().lower()
     if low not in ("you", "i"):
         return verb
-    stem = verb.strip().lower()
+    head, rest = _head(verb)
+    stem = head.lower()
     if stem in _COPULA_PRESENT:
-        return "are" if low == "you" else "am"
+        return ("are" if low == "you" else "am") + rest
     if stem in _COPULA_PAST:
-        return "were" if low == "you" else "was"
-    return _lemma(stem)
+        return ("were" if low == "you" else "was") + rest
+    return _base(stem) + rest
 
 
 def clause(subject: str, relation: str, obj: str, scope: str = "", speaker: str = "") -> str:
@@ -196,8 +251,7 @@ RELATION_SYNONYMS = {"is": "is", "are": "is", "am": "is", "was": "is", "were": "
 
 
 def _lemma(verb: str) -> str:
-    """Third-person -s removed: 'likes' and 'like' are one relation. Crude,
-    and only ever applied to the verb that heads a relation."""
+    """The form under which two spellings of a relation are one relation."""
     if verb in RELATION_SYNONYMS:
         return RELATION_SYNONYMS[verb]
     if len(verb) > 4 and verb.endswith("ies"):
