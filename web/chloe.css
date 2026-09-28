@@ -10,6 +10,8 @@
   --on-accent:#ffffff;
   --ok:#1f9d55;
   --mono:'JetBrains Mono',monospace;
+  --serif:'Source Serif 4',Georgia,'Times New Roman',serif;
+  --ink:#16202b;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -25,6 +27,7 @@ body{
 }
 
 .wrap{max-width:960px;margin:0 auto;padding:0 1.5rem}
+.wrap-wide{max-width:1180px}
 
 .bg-grid{
   position:fixed;inset:0;z-index:-1;
@@ -43,7 +46,7 @@ body{
   backdrop-filter:blur(10px);
   border-bottom:1px solid var(--border);
 }
-.header-inner{display:flex;align-items:center;justify-content:space-between;height:64px}
+.header-inner{display:flex;align-items:center;justify-content:flex-end;gap:1rem;height:64px}
 .brand{
   font-family:var(--mono);
   font-weight:700;
@@ -53,14 +56,19 @@ body{
   font-size:1.1rem;
 }
 .site-nav{display:flex;gap:1.75rem}
-.site-nav a{
-  color:var(--text-dim);
+.site-nav a,.nav-link{
+  color:var(--accent);
   text-decoration:none;
   font-size:.92rem;
   font-weight:500;
   transition:color .15s ease;
 }
-.site-nav a:hover{color:var(--text)}
+.site-nav a:hover,.nav-link:hover{color:var(--accent-2)}
+.nav-link{
+  background:none;border:0;padding:0;
+  font-family:inherit;
+  cursor:pointer;
+}
 
 .nav-toggle{
   display:none;
@@ -70,38 +78,65 @@ body{
 }
 .nav-toggle span{width:22px;height:2px;background:var(--text)}
 
-/* Hero */
-.hero{
-  padding:6.5rem 1.5rem 4.5rem;
-  text-align:center;
+/* Single-screen stage (index.html) */
+body.single-screen{min-height:100vh;display:flex;flex-direction:column}
+.stage{
+  /* Two rows so the right-hand column starts level with the chat box rather
+     than with the title: the heading block occupies row 1 of the left column
+     only, and row 2 holds the chat and the side column side by side. */
+  flex:1;min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1.06fr) minmax(0,.94fr);
+  grid-template-areas:
+    "head ."
+    "chat side";
+  grid-template-rows:auto 1fr;
+  column-gap:3rem;
+  padding-top:1.6rem;padding-bottom:1rem;
+  align-items:start;
 }
-.eyebrow{
-  font-family:var(--mono);
-  font-size:.8rem;
-  color:var(--accent);
-  letter-spacing:.1em;
-  text-transform:uppercase;
-  margin-bottom:1.25rem;
+.stage-head{grid-area:head;min-width:0}
+.stage-chat{grid-area:chat;min-width:0}
+.stage-side{grid-area:side;min-width:0}
+.stage-chat .chat-window{max-width:none}
+.stage-chat .chat-actions{max-width:none}
+.stage-chat .chat-log{
+  /* A set height rather than a stretch: as a flex child of the column the
+     window left its leftover space under the input row, inside the border. */
+  height:clamp(180px,38vh,400px);
+  min-height:0;
+  max-height:none;
 }
-.hero-title{
-  font-size:clamp(3.5rem, 12vw, 7rem);
+
+.stage-title{
+  /* inline-block so the gradient maps across the word itself; as a full-width
+     block it spanned the column and the letters only ever saw its dark end. */
+  display:inline-block;
+  font-size:clamp(2.4rem,4.6vw,3.2rem);
   font-weight:800;
-  letter-spacing:-.03em;
-  background:linear-gradient(135deg, var(--text) 30%, var(--accent) 70%, var(--accent-2) 100%);
+  letter-spacing:-.035em;
+  line-height:1;
+  background:linear-gradient(115deg, var(--text) 8%, var(--accent) 62%, var(--accent-2) 100%);
   -webkit-background-clip:text;
   background-clip:text;
   color:transparent;
-  line-height:1;
 }
-.hero-sub{
-  max-width:38rem;
-  margin:1.5rem auto 0;
+.stage-lead{
+  margin:.85rem 0 1.15rem;
   color:var(--text-dim);
-  font-size:1.1rem;
+  font-size:.88rem;
+  line-height:1.6;
+  max-width:34rem;
 }
-.hero-actions{
-  display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;
-  margin-top:2.25rem;
+
+.side-title{
+  font-family:var(--serif);
+  font-size:1.14rem;
+  font-weight:400;
+  font-style:italic;
+  line-height:1.45;
+  letter-spacing:-.005em;
+  color:var(--ink);
 }
 
 .btn{
@@ -149,34 +184,26 @@ body{
 }
 .section-lead{color:var(--text-dim);margin-bottom:1.75rem}
 
-/* About */
-.about-grid{
-  display:grid;
-  grid-template-columns:1.4fr 1fr;
-  gap:2.5rem;
-  align-items:start;
-}
+/* About copy */
 .about-copy p{color:var(--text-dim);margin-bottom:1rem}
 .about-copy em{color:var(--text);font-style:normal;font-weight:600}
-
-.acronym-card{
-  background:var(--card);
-  border:1px solid var(--border);
-  border-radius:1rem;
-  padding:1.5rem 1.75rem;
+.stage-side{display:flex;flex-direction:column}
+.stage-side .about-copy{
+  margin-top:1rem;
+  padding-top:1rem;
+  border-top:1px solid var(--border);
 }
-.acronym-row{
-  font-family:var(--mono);
-  color:var(--text-dim);
-  padding:.4rem 0;
-  font-size:.95rem;
+.stage-side .about-copy p{
+  /* Serif, a shade larger and darker than the chat lead on the left, so the
+     two blocks of body text read as different voices. */
+  font-family:var(--serif);
+  font-size:.97rem;
+  line-height:1.56;
+  color:var(--ink);
+  margin-bottom:.8rem;
 }
-.acronym-row .letter{
-  color:var(--accent);
-  font-weight:700;
-  font-size:1.1rem;
-  margin-right:.15rem;
-}
+.stage-side .about-copy p:last-child{margin-bottom:0}
+.stage-side .about-copy em{color:var(--ink);font-style:normal;font-weight:600}
 
 /* Chat */
 .chat-note{
@@ -340,29 +367,11 @@ body{
 .chat-input-row input:focus{outline:1px solid var(--accent)}
 .chat-input-row input::placeholder{color:var(--text-dim)}
 
-/* Timeline */
-.timeline{list-style:none;display:flex;flex-direction:column;gap:1.5rem}
-.timeline li{
-  display:grid;
-  grid-template-columns:7rem 1fr;
-  gap:1.25rem;
-  padding-bottom:1.5rem;
-  border-bottom:1px solid var(--border);
-}
-.timeline li:last-child{border-bottom:0}
-.tl-year{
-  font-family:var(--mono);
-  color:var(--accent);
-  font-weight:600;
-  font-size:.9rem;
-}
-.tl-text{color:var(--text-dim)}
-
 /* Footer */
 .site-footer{
   border-top:1px solid var(--border);
-  padding:2.5rem 1.5rem;
-  margin-top:2rem;
+  padding:.8rem 1.5rem;
+  margin-top:0;
 }
 .footer-inner{
   display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;
@@ -373,8 +382,18 @@ body{
 .footer-inner a:hover{color:var(--accent)}
 
 /* Responsive */
-@media (max-width:760px){
-  .about-grid{grid-template-columns:1fr}
+@media (max-width:900px){
+  /* Below two-column width the page scrolls normally again. */
+  body.single-screen{display:block}
+  .stage{
+    grid-template-columns:1fr;
+    grid-template-areas:"head" "chat" "side";
+    grid-template-rows:auto;
+    row-gap:2rem;
+    padding-bottom:2.5rem;
+  }
+  .stage-chat .chat-log{height:auto;min-height:160px;max-height:340px}
+  .stage-side{margin-top:.5rem}
   .nav-toggle{display:flex}
   .site-nav{
     position:absolute;
@@ -382,12 +401,12 @@ body{
     background:var(--bg);
     border-bottom:1px solid var(--border);
     flex-direction:column;
+    align-items:flex-start;
     padding:1rem 1.5rem;
     gap:1rem;
     display:none;
   }
   .site-nav.open{display:flex}
-  .timeline li{grid-template-columns:1fr}
 }
 
 /* Belief store (beliefs.html) */

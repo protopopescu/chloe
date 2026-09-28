@@ -7,75 +7,39 @@
 <meta name="author" content="Dan Protopopescu">
 <title>CHLOE — Persistent Epistemic Architecture</title>
 <link rel="icon" type="image/png" href="chloe-favicon.png">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="chloe.css">
 </head>
-<body>
+<body class="single-screen">
 
 <div class="bg-grid" aria-hidden="true"></div>
 
 <header class="site-header">
-  <div class="wrap header-inner">
-    <a href="#top" class="brand">CHLOE</a>
+  <div class="wrap wrap-wide header-inner">
     <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
       <span></span><span></span><span></span>
     </button>
     <nav class="site-nav" id="siteNav">
-      <a href="#about">About</a>
-      <a href="#chat">Chat</a>
       <a href="https://doi.org/10.5281/zenodo.22862832" target="_blank">Paper</a>
       <a href="https://github.com/protopopescu/chloe" target="_blank">Code</a>
-      <a href="#timeline">History</a>
       <a href="mailto:dan.protopopescu@glasgow.ac.uk">Contact</a>
     </nav>
   </div>
 </header>
 
-<main id="top">
+<main id="top" class="stage wrap wrap-wide">
 
-  <section class="hero wrap">
-    <p class="eyebrow">est. 2000 &mdash; still learning</p>
-    <h1 class="hero-title">CHLOE</h1>
-    <p class="hero-sub">A persistent epistemic architecture for inspectable AI &mdash; separating
-      durable cognitive state from a replaceable language-model interface.</p>
-    <div class="hero-actions">
-      <a href="#chat" class="btn btn-primary">Talk to Chloe</a>
-      <a href="#about" class="btn btn-ghost">About the project</a>
-    </div>
-  </section>
-
-  <section id="about" class="section wrap">
-    <h2 class="section-title">About</h2>
-    <div class="about-grid">
-      <div class="about-copy">
-        <p>CHLOE is a proposal for organising what persists behind an AI conversation. It separates a
-          <em>replaceable linguistic interface</em> from a <em>persistent epistemic substrate</em>: the
-          language model interprets and phrases natural language, but it is not Chloe&rsquo;s memory, identity,
-          or source of epistemic authority.</p>
-        <p>The persistent core stores explicit, scoped beliefs with provenance, distinguishes individual
-          sources and domain-sensitive trust, retains unresolved questions across interactions, and revisits
-          accumulated state during consolidation to surface contradictions and generate hypotheses for later
-          verification. The current demonstrator instantiates a substantial subset of this architecture;
-          richer long-duration agency and controlled self-modification remain research directions.</p>
-      </div>
-      <div class="acronym-card" role="img" aria-label="CHLOE stands for Computer-Human Language-Oriented Experiment">
-        <div class="acronym-row"><span class="letter">C</span>omputer</div>
-        <div class="acronym-row"><span class="letter">H</span>uman</div>
-        <div class="acronym-row"><span class="letter">L</span>anguage-</div>
-        <div class="acronym-row"><span class="letter">O</span>riented</div>
-        <div class="acronym-row"><span class="letter">E</span>xperiment</div>
-      </div>
-    </div>
-  </section>
-
-  <section id="chat" class="section wrap">
-    <h2 class="section-title">Chat</h2>
-    <p class="section-lead">Talk to Chloe below. What you tell it is handled as attributed evidence:
+  <div class="stage-head">
+    <h1 class="stage-title">CHLOE</h1>
+    <p class="stage-lead" style="padding-left: 6px">Talk to Chloe below. What you tell it is handled as attributed evidence:
       the persistent core records provenance, tracks trust by domain, surfaces contradictions, and can
       carry unresolved questions into later interactions.</p>
+  </div>
 
+  <div class="stage-chat">
     <div class="chat-window">
       <div class="chat-window-head">
         <div class="chat-dots"><span></span><span></span><span></span></div>
@@ -117,20 +81,30 @@
         Download Chat
       </button>
     </div>
-  </section>
+  </div>
 
-  <section id="timeline" class="section wrap">
-    <h2 class="section-title">History</h2>
-    <ol class="timeline">
-      <li><span class="tl-year">2000</span><span class="tl-text">CHLOE is first implemented in C++ as a seed architecture for persistent learning across interlocutors, with identity-conditioned admission of new material and sleep-time persistence.</span></li>
-      <li><span class="tl-year">2026</span><span class="tl-text">The project is revived with modern language models as replaceable linguistic interfaces. A Python/SQLite prototype instantiates the epistemic core and powers this demonstrator.</span></li>
-    </ol>
-  </section>
+  <aside class="stage-side">
+    <h2 class="side-title">A persistent epistemic architecture for inspectable AI &mdash; separating
+      durable cognitive state from a replaceable language-model interface.</h2>
+
+    <div class="about-copy">
+      <p>CHLOE is a proposal for organising what persists behind an AI conversation. It separates a
+        <em>replaceable linguistic interface</em> from a <em>persistent epistemic substrate</em>: the
+        language model interprets and phrases natural language, but it is not Chloe&rsquo;s memory, identity,
+        or source of epistemic authority.</p>
+      <p>The persistent core stores explicit, scoped beliefs with provenance, distinguishes individual
+        sources and domain-sensitive trust, retains unresolved questions across interactions, and revisits
+        accumulated state during consolidation to surface contradictions and generate hypotheses for later
+        verification. The current demonstrator instantiates a substantial subset of this architecture;
+        richer long-duration agency and controlled self-modification remain research directions.</p>
+    </div>
+  </aside>
 
 </main>
 
+
 <footer class="site-footer">
-  <div class="wrap footer-inner">
+  <div class="wrap wrap-wide footer-inner">
     <p>CHLOE and this demonstrator are projects of <a style="text-decoration: none" href="mailto:dan.protopopescu@glasgow.ac.uk">D. Protopopescu</a> &copy; 2000&ndash;2026</p>
   </div>
 </footer>
