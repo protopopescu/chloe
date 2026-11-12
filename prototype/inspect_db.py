@@ -79,7 +79,7 @@ def collect(store, want):
         } for p in people.values()]
 
     if "questions" in want:
-        # Worded from the belief as it stands; a question whose doubt has
+        # Worded from the belief as it stands. A question whose doubt has
         # lapsed is left out (it is closed the next time the queue is read).
         data["open_questions"] = [
             {"question": questions.render(store, q), "reason": q["reason"]}

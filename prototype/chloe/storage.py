@@ -2,8 +2,7 @@
 SQLite-backed knowledge store.
 
 A single dependency-free file, holding the atoms, their provenance, the
-people, the entailments and the open questions. Swapping this module for a
-real graph database later would not require changing the models.
+people, the entailments and the open questions.
 """
 
 import hashlib
@@ -32,7 +31,17 @@ CREATE TABLE IF NOT EXISTS interactions (
     person_id INTEGER NOT NULL,
     role TEXT NOT NULL,
     text TEXT NOT NULL,
-    at TEXT NOT NULL
+    at TEXT NOT NULL,
+    origin TEXT,
+    ingest_id INTEGER
+);
+
+-- One row per core taken in from another instance (ingest.py).
+CREATE TABLE IF NOT EXISTS ingests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    at TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS atoms (
@@ -94,10 +103,19 @@ CREATE TABLE IF NOT EXISTS open_questions (
 """
 
 
+def interaction_fingerprint(interaction_id: int, person_name: str, role: str, at: str, text: str) -> str:
+    """Which turn this is, wherever it is stored (ingest.py). Taken over the
+    row as its own store first wrote it, so two copies of one file agree on
+    every turn they share and on none they logged apart. An ingested turn
+    keeps the fingerprint it came with (Interaction.origin)."""
+    key = "\x1f".join((str(interaction_id), person_name, role, at, text))
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
 def _hash_secret(secret: str, salt: str) -> str:
     """PBKDF2-HMAC-SHA256, stdlib only. Secrets are normalised (trimmed and
     casefolded) before hashing, so 'Blue Whale' and 'blue whale' count as
-    the same word -- nobody remembers their own casing."""
+    the same word."""
     normalized = secret.strip().casefold()
     return hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt.encode("utf-8"), 100_000).hex()
 
@@ -116,17 +134,15 @@ class KnowledgeStore:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Upgrade databases created before the secret-word identity feature
-        existed. CREATE TABLE IF NOT EXISTS in SCHEMA only affects brand-new
-        databases, so pre-existing ones (chloe_data.db, uni_chat.db, ...)
-        need their `people` table patched in place."""
+        """Bring a database written by an earlier version up to this schema.
+        CREATE TABLE IF NOT EXISTS leaves existing tables as they are, so
+        columns added since are patched in here."""
         cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(people)")}
         if "secret_hash" not in cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_hash TEXT")
         if "secret_salt" not in cols:
             self.conn.execute("ALTER TABLE people ADD COLUMN secret_salt TEXT")
-        # Databases predating the question mode lack `answered`; existing
-        # rows default to 0, i.e. still open, which is correct for them.
+        # Existing rows default to 0: still open.
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(open_questions)")}
         if "answered" not in cols:
             self.conn.execute("ALTER TABLE open_questions ADD COLUMN answered INTEGER NOT NULL DEFAULT 0")
@@ -135,30 +151,33 @@ class KnowledgeStore:
         # A question about two beliefs at once (whether one implies the other).
         if "other_atom_id" not in cols:
             self.conn.execute("ALTER TABLE open_questions ADD COLUMN other_atom_id INTEGER")
+        # Existing turns were all spoken here.
+        int_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(interactions)")}
+        if "origin" not in int_cols:
+            self.conn.execute("ALTER TABLE interactions ADD COLUMN origin TEXT")
+        if "ingest_id" not in int_cols:
+            self.conn.execute("ALTER TABLE interactions ADD COLUMN ingest_id INTEGER")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS interactions_origin ON interactions(origin)")
         ent_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(entailments)")}
         if "holds" not in ent_cols:
             self.conn.execute("ALTER TABLE entailments ADD COLUMN holds INTEGER NOT NULL DEFAULT 1")
         if "confirmed_by" not in ent_cols:
             self.conn.execute("ALTER TABLE entailments ADD COLUMN confirmed_by INTEGER")
 
-        # Databases predating the LLM input parser lack this column;
-        # existing rows stay NULL, meaning "not recorded".
+        # Existing rows stay NULL: not recorded.
         prov_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(provenance)")}
         if "parse_confidence" not in prov_cols:
             self.conn.execute("ALTER TABLE provenance ADD COLUMN parse_confidence REAL")
-        # Databases predating entailment links: every existing row is direct
-        # evidence, and none of it is void.
+        # Existing rows are direct evidence, none of it void.
         if "via_atom_id" not in prov_cols:
             self.conn.execute("ALTER TABLE provenance ADD COLUMN via_atom_id INTEGER")
         if "void" not in prov_cols:
             self.conn.execute("ALTER TABLE provenance ADD COLUMN void INTEGER NOT NULL DEFAULT 0")
 
     def _migrate_questions(self) -> None:
-        """Questions used to be stored as finished sentences. They are now a
-        reason and what the question is about, and are worded when asked.
-        Legacy rows keep their text as a label; an unknown term is recovered
-        from it, and an atom that had several open questions -- one per
-        wording the old dedupe let through -- keeps only the newest."""
+        """Rows that stored a question as a finished sentence. Each keeps its
+        text as a label, an unknown term is recovered from it, and an atom
+        with several open questions keeps only the newest."""
         self.conn.execute("ALTER TABLE open_questions ADD COLUMN term TEXT")
         for row in self.conn.execute(
                 "SELECT id, question FROM open_questions WHERE reason = 'unknown_term'").fetchall():
@@ -189,6 +208,18 @@ class KnowledgeStore:
         )
         self.conn.commit()
         return Person(id=cur.lastrowid, name=name)
+
+    def add_person(self, person: Person) -> Person:
+        """Insert a whole person record -- trust and secret included -- as
+        it stood in another store. The id is this store's."""
+        cur = self.conn.execute(
+            "INSERT INTO people (name, trust, created_at, secret_hash, secret_salt) VALUES (?, ?, ?, ?, ?)",
+            (person.name, json.dumps(person.trust), person.created_at, person.secret_hash, person.secret_salt),
+        )
+        self.conn.commit()
+        return Person(id=cur.lastrowid, name=person.name, trust=dict(person.trust),
+                      created_at=person.created_at, secret_hash=person.secret_hash,
+                      secret_salt=person.secret_salt)
 
     def save_person(self, person: Person) -> None:
         self.conn.execute(
@@ -227,27 +258,43 @@ class KnowledgeStore:
     # ------------------------------------------------------------ interactions
     def log_interaction(self, interaction: Interaction) -> Interaction:
         cur = self.conn.execute(
-            "INSERT INTO interactions (person_id, role, text, at) VALUES (?, ?, ?, ?)",
-            (interaction.person_id, interaction.role, interaction.text, interaction.at),
+            "INSERT INTO interactions (person_id, role, text, at, origin, ingest_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (interaction.person_id, interaction.role, interaction.text, interaction.at,
+             interaction.origin, interaction.ingest_id),
         )
         self.conn.commit()
         interaction.id = cur.lastrowid
         return interaction
 
+    @staticmethod
+    def _row_to_interaction(r) -> Interaction:
+        return Interaction(id=r["id"], person_id=r["person_id"], role=r["role"], text=r["text"], at=r["at"],
+                           origin=r["origin"], ingest_id=r["ingest_id"])
+
     def interactions_for_person(self, person_id: int) -> list:
         rows = self.conn.execute(
             "SELECT * FROM interactions WHERE person_id = ? ORDER BY id", (person_id,)
         ).fetchall()
-        return [
-            Interaction(id=r["id"], person_id=r["person_id"], role=r["role"], text=r["text"], at=r["at"])
-            for r in rows
-        ]
+        return [self._row_to_interaction(r) for r in rows]
 
     def interaction_by_id(self, interaction_id: int) -> Optional[Interaction]:
         r = self.conn.execute("SELECT * FROM interactions WHERE id = ?", (interaction_id,)).fetchone()
-        if r is None:
-            return None
-        return Interaction(id=r["id"], person_id=r["person_id"], role=r["role"], text=r["text"], at=r["at"])
+        return self._row_to_interaction(r) if r else None
+
+    def all_interactions(self) -> list:
+        rows = self.conn.execute("SELECT * FROM interactions ORDER BY id").fetchall()
+        return [self._row_to_interaction(r) for r in rows]
+
+    def fingerprint_of(self, interaction: Interaction, person_name: str) -> str:
+        """The turn's fingerprint: the one it came with, or the one it has
+        as a turn spoken here."""
+        return interaction.origin or interaction_fingerprint(
+            interaction.id, person_name, interaction.role, interaction.at, interaction.text)
+
+    def fingerprints(self) -> dict:
+        """fingerprint -> local id, for every turn in the store."""
+        names = {p.id: p.name for p in self.all_people()}
+        return {self.fingerprint_of(i, names.get(i.person_id, "")): i.id for i in self.all_interactions()}
 
     # ------------------------------------------------------------------ atoms
     def find_atoms(self, subject: str, relation: str) -> list:
@@ -313,6 +360,14 @@ class KnowledgeStore:
                               f"AND {other} != ?", (new_id, old_id, new_id))
         self.conn.commit()
 
+    def has_provenance(self, prov: Provenance, atom_id: Optional[int] = None) -> bool:
+        """Whether this act of evidence -- this person, in this interaction,
+        this way -- is already on file: on the given atom, or on any."""
+        sql = ("SELECT 1 FROM provenance WHERE person_id = ? AND interaction_id = ? AND polarity = ?"
+               + (" AND atom_id = ?" if atom_id is not None else "") + " LIMIT 1")
+        args = (prov.person_id, prov.interaction_id, prov.polarity) + ((atom_id,) if atom_id is not None else ())
+        return self.conn.execute(sql, args).fetchone() is not None
+
     def add_provenance(self, atom_id: int, prov: Provenance) -> None:
         self.conn.execute(
             "INSERT INTO provenance (atom_id, person_id, interaction_id, polarity, at, parse_confidence, "
@@ -363,6 +418,9 @@ class KnowledgeStore:
             "SELECT 1 FROM entailments WHERE (specific_id = ? AND general_id = ?) "
             "OR (specific_id = ? AND general_id = ?)", (a, b, b, a)).fetchone() is not None
 
+    def all_entailments(self) -> list:
+        return [dict(r) for r in self.conn.execute("SELECT * FROM entailments ORDER BY created_at")]
+
     def provenance_for(self, atom_id: int) -> list:
         rows = self.conn.execute("SELECT * FROM provenance WHERE atom_id = ? ORDER BY at, id", (atom_id,)).fetchall()
         return [self._row_to_provenance(r) for r in rows]
@@ -412,6 +470,11 @@ class KnowledgeStore:
             return RelationProperties(name=name)  # defaults: not transitive, not symmetric
         return RelationProperties(name=row["name"], transitive=bool(row["transitive"]), symmetric=bool(row["symmetric"]))
 
+    def declared_relations(self) -> list:
+        """Every relation with a row of its own, declared either way."""
+        return [RelationProperties(name=r["name"], transitive=bool(r["transitive"]), symmetric=bool(r["symmetric"]))
+                for r in self.conn.execute("SELECT * FROM relations ORDER BY name")]
+
     def declare_relation(self, props: RelationProperties) -> None:
         self.conn.execute(
             "INSERT INTO relations (name, transitive, symmetric) VALUES (?, ?, ?) "
@@ -453,6 +516,40 @@ class KnowledgeStore:
         self.conn.commit()
         return True
 
+    def has_open_question(self, related_atom_id: Optional[int] = None, term: Optional[str] = None,
+                          other_atom_id: Optional[int] = None) -> bool:
+        """Whether this subject of doubt already has an open question, by
+        the same test queue_question() uses."""
+        if related_atom_id is not None:
+            row = self.conn.execute(
+                "SELECT 1 FROM open_questions WHERE related_atom_id = ? AND other_atom_id IS ? "
+                "AND answered = 0", (related_atom_id, other_atom_id)).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT 1 FROM open_questions WHERE related_atom_id IS NULL AND answered = 0 "
+                "AND lower(trim(term)) = ?", (grammar.norm_phrase(term or ""),)).fetchone()
+        return row is not None
+
+    def has_question(self, reason: str, related_atom_id: Optional[int], term: Optional[str],
+                     other_atom_id: Optional[int]) -> bool:
+        """Whether this exact question has been opened here, answered or not."""
+        return self.conn.execute(
+            "SELECT 1 FROM open_questions WHERE reason = ? AND related_atom_id IS ? "
+            "AND other_atom_id IS ? AND term IS ?", (reason, related_atom_id, other_atom_id, term)
+        ).fetchone() is not None
+
+    def add_closed_question(self, label: str, reason: str, related_atom_id: Optional[int],
+                            term: Optional[str], other_atom_id: Optional[int], created_at: str) -> None:
+        """A question kept for the record of what was once asked."""
+        self.conn.execute(
+            "INSERT INTO open_questions (question, reason, related_atom_id, term, other_atom_id, "
+            "created_at, asked, answered) VALUES (?, ?, ?, ?, ?, ?, 1, 1)",
+            (label, reason, related_atom_id, term, other_atom_id, created_at))
+        self.conn.commit()
+
+    def all_questions(self) -> list:
+        return [dict(r) for r in self.conn.execute("SELECT * FROM open_questions ORDER BY id")]
+
     def next_question(self):
         """The next open question in queue order. Never-asked ones come
         first; an asked-but-unanswered one comes round again rather than
@@ -489,6 +586,20 @@ class KnowledgeStore:
             "SELECT * FROM open_questions WHERE answered = 0 ORDER BY asked, created_at, id"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------- ingests
+    def begin_ingest(self, source: str) -> int:
+        cur = self.conn.execute("INSERT INTO ingests (source, at) VALUES (?, ?)", (source, now_iso()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def finish_ingest(self, ingest_id: int, summary: dict) -> None:
+        self.conn.execute("UPDATE ingests SET summary = ? WHERE id = ?", (json.dumps(summary), ingest_id))
+        self.conn.commit()
+
+    def ingests(self) -> list:
+        rows = self.conn.execute("SELECT * FROM ingests ORDER BY id").fetchall()
+        return [dict(r, summary=json.loads(r["summary"]) if r["summary"] else {}) for r in rows]
 
     def close(self):
         self.conn.close()

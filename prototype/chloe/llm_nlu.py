@@ -1,11 +1,7 @@
 """
 LLM-based input parser, behind nlu.py's `parse(text) -> Utterance`
-interface.
-
-Symmetric to the output-side naturalisation layer (llm_client.py +
-persona.py): the same vLLM-served model that phrases CHLOE's replies also
-reads the human's input into a structured Utterance for the symbolic
-engine.
+interface. The LLM that phrases CHLOE's replies (persona.py) reads the
+person's input into a structured Utterance for the symbolic engine.
 
 Routing (LLM-first, pattern fallback):
 
@@ -13,11 +9,9 @@ Routing (LLM-first, pattern fallback):
      anything below runs.
   1. Commands are intercepted deterministically, by exact match against
      nlu.COMMANDS, before the LLM sees anything. The LLM is never allowed
-     to emit a COMMAND utterance -- if it tries, the parse is refused. The
-     parser turns text into testimony; it does not get to operate CHLOE.
-  2. If no vLLM server is configured (VLLM_BASE_URL unset), the original
-     pattern parser handles the turn, keeping the prototype fully
-     self-contained offline, exactly as before.
+     to emit a COMMAND utterance -- if it tries, the parse is refused.
+  2. If no server is configured (VLLM_BASE_URL unset), the pattern parser
+     handles the turn.
   3. Otherwise the LLM is asked to classify the utterance into one of the
      declared UtteranceTypes and its reply is strictly validated: unknown
      type, missing fields, or a malformed shape are never patched up.
@@ -26,9 +20,8 @@ Routing (LLM-first, pattern fallback):
      violation.
   4. A *valid* LLM refusal (type "unknown", or confidence below
      CHLOE_PARSE_MIN_CONFIDENCE) is final and is NOT retried against the
-     pattern parser. Refuse-rather-than-guess would mean nothing if a
-     refusal fell through to a sloppier parser: once stored, a fabricated
-     parse is indistinguishable from real testimony.
+     pattern parser. A refusal that fell through would let a guess in, and
+     once stored a fabricated parse is indistinguishable from testimony.
   5. Only a *broken* exchange (server unreachable, HTTP error, unparseable
      or invalid JSON) falls back to the pattern parser.
 
@@ -178,7 +171,7 @@ def _grounded(value: str, raw: str) -> str:
     regularise a verb ("it's daytime" -> "it is daytime"), but every
     content word it returns must be one the person used: a word that
     appears nowhere in the line was supplied by the model, and is a contract
-    violation rather than something to store. The person's own spelling,
+    violation. The person's own spelling,
     capitals included, is what is kept."""
     if not value:
         return value
@@ -255,7 +248,7 @@ def _ask_llm(text: str) -> dict:
             {"role": "system", "content": _PARSER_SYSTEM_PROMPT},
             {"role": "user", "content": f"Input: {text}"},
         ],
-        temperature=0.0,  # parsing is classification; be deterministic
+        temperature=0.0,  # parsing is classification, so deterministic
         max_tokens=200,
     )
     return _extract_json(reply)

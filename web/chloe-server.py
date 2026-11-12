@@ -14,13 +14,9 @@ two JSON endpoints:
                    is configured, phrased naturally.
 
 Also runs "dreaming": a background thread that once a day, during a fixed
-window (DREAM_START for DREAM_DURATION_MINUTES), takes the site offline
-for chat and runs
-chloe.consolidation.sleep() over the shared knowledge store -- merging
-duplicate atoms, flagging contradictions, generating hypotheses for
-declared-transitive relations, and queuing verification questions. The CLI
-only ever ran that pass on an explicit "sleep" command; here it is
-scheduled. See the DREAM_* environment variables below.
+window (DREAM_START for DREAM_DURATION_MINUTES), takes the site offline for
+chat and runs chloe.consolidation.sleep() over the shared knowledge store.
+See the DREAM_* environment variables below.
 
 Stdlib only, as is the chloe package it imports: no pip install to run
 this. The only outbound network call is to whatever OpenAI-compatible
@@ -68,27 +64,19 @@ PORT = int(os.getenv("PORT", "5010"))
 # it except through one. Exposing it directly is the deliberate act.
 HOST = os.getenv("HOST", "127.0.0.1")
 
-# A fixed window once a day, not a repeating interval: nightly downtime
-# rather than a periodic maintenance tick. DREAM_START is "HH:MM" in
-# DREAM_TZ (default: the server process's own time zone -- set DREAM_TZ,
-# e.g. "Europe/London", if that is not where "night" should fall).
-# consolidation.sleep() finishes in well under a second, so CHLOE has
-# nothing left to do for most of the window. It stays offline anyway,
-# keeping the offline phase a real one rather than waking early.
 # The belief browser exposes the whole shared store, so it is off unless a
 # password is configured: absent CHLOE_BELIEFS_PASSWORD, /beliefs and
 # /api/beliefs do not exist at all rather than existing unprotected. Basic
 # auth sends the password in a reversible encoding on every request, so this
 # is only meaningful behind the HTTPS reverse proxy the README already asks
-# for; it keeps casual visitors out, it is not a security boundary.
+# for. It keeps casual visitors out and is no security boundary.
 BELIEFS_USER = os.getenv("CHLOE_BELIEFS_USER", "chloe")
 BELIEFS_PASSWORD = os.getenv("CHLOE_BELIEFS_PASSWORD")
 BELIEFS_REALM = "CHLOE beliefs"
 
-# A person can also put CHLOE to sleep on demand with "Sleep, Chloe", as the
-# 2000 version allowed. That runs the same consolidation pass through the same
-# dream window, only briefly, so the site visibly sleeps and wakes instead of
-# the pass happening invisibly inside one request.
+# A person can also put CHLOE to sleep on demand with "Sleep, Chloe". That
+# runs the same consolidation pass through the same dream window, only
+# briefly, so the site visibly sleeps and wakes.
 NAP_SECONDS = int(os.getenv("CHLOE_NAP_SECONDS", "12"))
 
 # Every visitor supplies their own session_id, so the number of live
@@ -135,6 +123,10 @@ SITE_FILES = {
     "chloe-favicon.png": "image/png",
 }
 
+# One fixed window a day. DREAM_START is "HH:MM" in DREAM_TZ (default: the
+# server process's own time zone -- set DREAM_TZ, e.g. "Europe/London", if
+# that is not where night should fall). The pass itself takes well under a
+# second, and the site stays offline for the rest of the window.
 DREAM_START = os.getenv("DREAM_START", "22:00")
 DREAM_DURATION_MINUTES = float(os.getenv("DREAM_DURATION_MINUTES", "15"))
 DREAM_TZ = os.getenv("DREAM_TZ")
@@ -152,7 +144,7 @@ def _now() -> datetime:
 
 def _next_dream_window(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:
     """Returns (start, end) of the next dream window -- today's if it
-    hasn't ended yet (including "we're currently inside it", e.g. right
+    hasn't ended yet (including one already under way, e.g. right
     after the server starts), otherwise tomorrow's."""
     now = now or _now()
     hour, minute = _dream_hour_minute()
@@ -217,12 +209,9 @@ class _LruTable:
 
 
 class _SessionRegistry:
-    """Everything held per browser session, in one place.
-
-    Two things used to be keyed by session_id independently: the engine, and
-    whether that session had asked CHLOE to sleep and was owed its questions
-    on waking. Both grew without limit, and the second was written from the
-    request thread and read from the wake poll without a lock.
+    """Everything held per browser session, in one place and under one
+    bound and one lock: the engine, and whether the session asked CHLOE to
+    sleep and is owed its questions on waking.
     """
 
     def __init__(self, capacity: int):
@@ -351,10 +340,8 @@ def _dream_status() -> dict:
 
 
 def _run_dream_window(end: datetime) -> None:
-    """Runs the consolidation pass at the start of the window, then
-    holds 'dreaming' open (real downtime, not a UI artifact) until `end`,
-    since a fixed nightly window was chosen deliberately over a repeating
-    interval -- see the DREAM_START comment above."""
+    """Runs the consolidation pass at the start of the window, then holds
+    'dreaming' open until `end`."""
     global _dreaming, _last_dream_summary, _last_dream_at
     with _dream_lock:
         _dreaming = True
@@ -380,7 +367,7 @@ def _start_nap(session_id: str) -> bool:
     """Put CHLOE to sleep briefly, on request. Returns False if it is
     already dreaming. The window runs on its own thread so the request that
     asked for it returns at once and the browser can show the sleeping
-    state, rather than hanging for the duration."""
+    state."""
     with _dream_lock:
         if _dreaming:
             return False
@@ -552,12 +539,9 @@ def handle_wake(session_id: str, name: str) -> dict:
 
 
 def handle_greet(payload: dict, client: Optional[str] = None) -> dict:
-    """Explicit first-contact step: the website asks a visitor's real
-    name before starting the chat proper (see script.js), and this is what
-    turns that name into a genuine ChloeEngine.greet() call -- as opposed
-    to the old behaviour of silently greeting a synthetic
-    'web-visitor-<uuid>' name that the visitor never typed and never saw.
-    """
+    """First contact: the website asks a visitor's name before the chat
+    proper (see script.js), and this turns it into a ChloeEngine.greet()
+    call."""
     session_id = str(payload.get("session_id") or uuid.uuid4())
     name = (payload.get("name") or "").strip()
     if _is_dreaming():
@@ -630,12 +614,9 @@ def handle_chat(payload: dict, client: Optional[str] = None) -> dict:
         try:
             candidate = llm_client.chat(
                 messages, temperature=persona.NATURALISE_TEMPERATURE)
-            # The model's licence is linguistic, not epistemic. A reply that
-            # repeats the instructions, echoes the person, swaps the
-            # speakers, supplies a name or number of its own or leaves out
-            # one the core gave, answers a yes/no question the other way
-            # from the core, or runs away is dropped for the engine's own
-            # text -- the same fallback as an unreachable server.
+            # A reply that breaks the reply contract (persona.py) is dropped
+            # for the engine's own text -- the same fallback as an
+            # unreachable server.
             rejected = persona.rejection_reason(candidate, message, to_phrase,
                                                 stance=stance)
             if rejected:
@@ -682,8 +663,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        # The site is edited and redeployed often; a cached stylesheet has
-        # already been mistaken for a rendering bug. Revalidate every time.
+        # The site is redeployed often, so revalidate every time.
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
@@ -694,7 +674,7 @@ class Handler(BaseHTTPRequestHandler):
         Apache appends the address it observed to X-Forwarded-For, so the
         last entry is the one it saw and the only one a caller cannot
         forge -- anything a caller puts in the header is pushed left of it.
-        With no header and a loopback peer we are behind the proxy and
+        With no header and a loopback peer the server is behind the proxy and
         blind, which None says plainly rather than lumping every visitor
         under the proxy's address.
         """
@@ -777,8 +757,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route in ("/api/beliefs", "/beliefs", "/beliefs.html"):
-            # Unconfigured means absent, not unprotected: no 403 to advertise
-            # that there is something here worth guessing a password for.
+            # Unconfigured means absent: no 403 to advertise that there is
+            # something here worth guessing a password for.
             if not BELIEFS_PASSWORD:
                 self.send_error(404)
                 return

@@ -4,31 +4,21 @@ its replies must satisfy.
 
 The symbolic engine (dialogue.ChloeEngine) decides what happened -- a fact
 learned, corroborated or contradicted, a question pending, a trust score
-changed -- and produces a short factual reply. The model's only job is to
-phrase that reply. Its licence is linguistic, not epistemic.
+changed -- and produces a short factual reply. The LLM only phrases it.
 
-That licence is enforced rather than merely requested. A naturalisation is
-checked before it is shown, and one that repeats the prompt's own
-scaffolding, echoes the person's words back at them, runs far longer than
-the reply it was given, swaps the speakers, introduces a name or number
-the core never supplied, or leaves out a name it did, is rejected in favour of
-the engine's own text -- the same fallback taken when the server is
-unreachable.
+A naturalisation is checked before it is shown. One that repeats the
+prompt's scaffolding, echoes the person's words back at them, runs far
+longer than the reply it was given, swaps the speakers, introduces a name or
+number the core never supplied, leaves out a name it did, or answers a
+yes/no question the other way, is rejected in favour of the engine's own
+text -- the same fallback taken when the server is unreachable. A claim
+phrased into a reply would be attributed to nobody and could never be
+doubted later.
 
 Some of what the core writes is not phrased at all. A question put to the
 person is what their next answer will be recorded against, and a list of
-beliefs is one item per belief, which the checks below do not count. Both
-reach the person in the core's words (split_verbatim, and the server's use
-of it).
-
-The last two checks are the ones that matter most. A model with general
-knowledge will otherwise settle a question the core deliberately left open
-("I've corrected you, Glasgow is in Scotland") or invert a reply about the
-interlocutor into one about itself ("you're Sam" -> "I'm Sam"). The
-first is not a failure of knowledge -- the model may well be right -- but
-of provenance: a claim phrased into the reply is attributed to nobody,
-scoped to nothing, and cannot later be doubted. Model knowledge can be
-admitted, but only as a source among sources, never through this channel.
+beliefs has one item per belief, which the checks do not count. Both reach
+the person in the core's words (split_verbatim).
 """
 
 import re
@@ -56,15 +46,13 @@ STYLE_GUIDE = (
     "reply."
 )
 
-# Phrasing a sentence that has already been decided needs no sampling
-# diversity; variation here is drift, not style.
+# A sentence that has already been decided needs no sampling diversity.
 NATURALISE_TEMPERATURE = 0.0
 
-# A backstop, not the defence. The defence is the request's structure: no
-# label in the user turn, nothing in the prompt that would read as
-# instructions if it were echoed. These phrases are kept because a small
-# model can still produce them unprompted, but the list should not grow --
-# new leakage means the structure needs tightening, not a longer denylist.
+# A backstop. The defence is the request's structure: no label in the user
+# turn, nothing in the prompt that would read as instructions if echoed. A
+# small model can still produce these phrases unprompted. New leakage calls
+# for tightening the structure, and this list should not grow.
 SCAFFOLD_MARKERS = (
     "ground truth",
     "the person just said",
@@ -88,14 +76,13 @@ LENGTH_FLOOR = 240      # ... and short replies are never rejected for length
 _TOKEN_RE = re.compile(r"[A-Za-z][\w'’-]*|\d[\d.,:%/-]*")
 _SENTENCE_BREAK = ".!?:;\n"
 _CORE_SENTENCE_BREAK = ".!?;\n"
-# First person and Chloe's own name are hers to use wherever she likes.
+# First person and Chloe's own name may appear anywhere.
 _ALWAYS_PERMITTED = {"i", "i'm", "i've", "i'll", "i'd", CHLOE_NAME.lower()}
 
 # How a reply opens, when it opens by answering. The core knows whether it
 # said yes, no or neither (models.Stance); these say what the naturalisation
-# did, so the two can be compared. Only the opening is examined: an answer
-# to a yes/no question leads with it, and a deeper reading of the sentence
-# would be the guard forming an opinion of its own.
+# did, so the two can be compared. Only the opening is examined, since an
+# answer to a yes/no question leads with it.
 _AFFIRM_OPENER_RE = re.compile(
     r"^\W*(?:yes|yeah|yep|yup|correct|true|indeed|right|that(?:'|\u2019)?s right|absolutely|of course)\b",
     re.IGNORECASE)
@@ -189,13 +176,11 @@ def naturalise_request(user_message: str, ground_truth_reply: str) -> list:
     """Messages for asking the model to phrase a reply the engine has
     already decided.
 
-    Deliberately three turns and no conversation history. The model is not
-    holding up its end of a dialogue -- it is wording one sentence it was
-    handed. Shown its own previous naturalisations as assistant turns, a
-    small model continues that thread in preference to the instruction it
-    was given, which is how a reply ends up saying something the core never
-    decided. The user turn carries only what the person actually said, so
-    there is no scaffolding in it to echo.
+    Deliberately three turns and no conversation history. Shown its own
+    previous naturalisations as assistant turns, a small model continues
+    that thread in preference to the instruction, and the reply ends up
+    saying something the core never decided. The user turn carries only what
+    the person said, so there is no scaffolding in it to echo.
     """
     return [
         {"role": "system", "content": system_prompt(ground_truth_reply)},
@@ -241,13 +226,10 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     the epistemic core never decided and cannot account for.
 
     `stance` is the core's own answer to a yes/no question -- a models.Stance
-    value, or None where the turn was not one. Compared here against the
-    stance the reply opens with, because the polarity check below cannot see
-    this case: it looks for the person's own words inside the core's reply,
-    and a core that answers "I don't think so -- I believe Hector is a dog"
-    to "Is Hector an animal?" never contains them. Without this, a model
-    that knows dogs are animals answers the question the core would not,
-    in a channel that records no source for the answer.
+    value, or None where the turn was not one. It is compared with the
+    stance the reply opens with, a case the polarity check cannot see: to
+    "Is Hector an animal?" the core may answer "I don't think so -- I
+    believe Hector is a dog", which never contains the person's words.
     """
     text = (reply or "").strip()
     if len(text) < MIN_REPLY_CHARS:
@@ -263,12 +245,9 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     # back -- as an opening restatement, or inside a narration of the turn
     # ("The conversation was: ...") -- which is scaffolding by another route.
     echo = user_message.strip().rstrip(".!?").lower()
-    # A denial is the exception. "Claire is not an artist" against a core
-    # reply of "... I'll double check: Claire is an artist" is not the model
-    # parroting the visitor -- both are naming the same atom, and saying so
-    # plainly is the natural phrasing. Allow it only when the core itself
-    # named that proposition; a denial of something the core never mentioned
-    # is still an echo.
+    # A denial is the exception: "Claire is not an artist" against a core
+    # reply ending "I'll double check: Claire is an artist" names the same
+    # atom. It is allowed only where the core itself named the proposition.
     core_named_it = (echo in ground_truth_reply.lower()
                      or _denegate(echo) in _denegate(ground_truth_reply))
     if (len(echo) >= MIN_ECHO_CHARS
@@ -296,7 +275,7 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     # Polarity. The echo exemption above lets a naturalisation quote a
     # denial; it must not let it turn the core's own belief around. If the
     # core stated the proposition one way and the reply states it only the
-    # other way, the outcome has been changed, not phrased.
+    # other way, the reply has changed the outcome.
     atom_words = _words(_denegate(echo))
     if len(echo) >= MIN_ECHO_CHARS:
         core = _polarities(ground_truth_reply, atom_words)
@@ -323,8 +302,8 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
     # person something else ("You're welcome" for "that matches:
     # Humuhumunukunukapuaa is a fish"). The core writes no labels, so a
     # capital after its colons is a name ("I'll double check: Hector is a
-    # dog"). A number may be left out -- "(confidence 0.63)" is detail, not
-    # decision -- but never changed, which the check above already covers.
+    # dog"). A number may be left out -- "(confidence 0.63)" is detail -- but
+    # never changed, which the check above already covers.
     required = {r for r in _referents(ground_truth_reply, strict=True, breaks=_CORE_SENTENCE_BREAK)
                 if not r[0].isdigit()} - _ALWAYS_PERMITTED
     missing = sorted(r for r in required

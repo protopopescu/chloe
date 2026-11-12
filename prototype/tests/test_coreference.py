@@ -2,7 +2,7 @@
 Tests for coreference: the proposal the model makes, who may answer it, and
 what moves once somebody has.
 
-The model is stubbed -- these check the contract around it, not the model.
+The model is stubbed -- these check the contract around it.
 Stdlib only, offline:
 
     python3 -m unittest tests.test_coreference

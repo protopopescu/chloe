@@ -99,8 +99,8 @@ class LLMParserTests(unittest.TestCase):
     # -------------------------------------------------------------- refusals
     def test_honest_refusal_is_final(self):
         _MOCK["reply"] = _payload(type="unknown", confidence=0.9, reason="not_parseable")
-        utt = llm_nlu.parse("the sky is blue")  # regex COULD parse this...
-        self.assertEqual(utt.type, UtteranceType.UNKNOWN)  # ...but must not get to
+        utt = llm_nlu.parse("the sky is blue")  # the patterns would parse this,
+        self.assertEqual(utt.type, UtteranceType.UNKNOWN)  # but a refusal is final
         self.assertEqual(utt.extra["reason"], "not_parseable")
 
     def test_low_confidence_refusal(self):
@@ -186,8 +186,7 @@ class LLMParserTests(unittest.TestCase):
         self.assertEqual(llm_nlu.parse("sleep").type, UtteranceType.COMMAND)
         self.assertEqual(_MOCK["hits"], 0)
 
-        # The limit is a maximum, not a threshold: a line of exactly
-        # MAX_INPUT_CHARS is still read.
+        # A line of exactly MAX_INPUT_CHARS is still read.
         _MOCK["reply"] = _payload(subject="Felix", relation="is", object="a cat",
                                   confidence=0.9)
         at_the_limit = "Felix is a cat".ljust(MAX_INPUT_CHARS)

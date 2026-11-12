@@ -3,8 +3,8 @@ Tests for the sleep pass, and in particular for the LLM hypothesis
 generator: what it keeps, what it refuses, and what it does when the server
 is not there.
 
-The model is stubbed throughout -- these check the contract around it, not
-the model. Stdlib only, offline:
+The model is stubbed throughout -- these check the contract around it.
+Stdlib only, offline:
 
     python3 -m unittest tests.test_consolidation
 """
@@ -70,7 +70,8 @@ class ConsolidationTestCase(unittest.TestCase):
         a = self.store.save_atom(Atom(id=None, subject=subject, relation=relation,
                                       object=obj, scope=scope, status=status,
                                       confidence=confidence))
-        self.store.add_provenance(a.id, Provenance(person_id=1, interaction_id=1, polarity=1))
+        # One act of evidence per belief, as in conversation.
+        self.store.add_provenance(a.id, Provenance(person_id=1, interaction_id=1000 + a.id, polarity=1))
         return a
 
     def felix(self):

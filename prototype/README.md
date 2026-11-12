@@ -43,7 +43,7 @@ trust, and queue a question to ask about it next time.
 
 - **Web browsing** (the design's "navigate the internet and read webpages") — no network access built in.
 - **Self-recompilation** (the original `chloe.sh` exit-code-66 respawn loop) — not meaningful for a Python prototype; the closest modern analogue would be CHLOE proposing its own code changes as a diff for review, which is a separate, larger feature.
-- **Multi-instance internal dialogue** (the 2000 notes' "dialogue between instances with different experiences") — the data model (per-person provenance, domain-specific trust) supports this; there's just no orchestration of multiple CHLOE instances yet.
+- **Multi-instance internal dialogue** (the 2000 notes' "dialogue between instances with different experiences") — one instance can take in another's core (`ingest_core.py`, below), which merges their experience offline. Instances that converse, putting their open questions to one another, are the next step.
 
 ## File layout
 
@@ -63,8 +63,10 @@ chloe/
   consolidation.py   sleep(): contradiction detection, dedup, implication between
                      stated values, hypothesis generation (declared relation
                      properties, and LLM-proposed conjectures)
+  ingest.py          merging another instance's core into this one
   cli.py / __main__.py   `python -m chloe`
 inspect_db.py       read-only inspector for any CHLOE store (no server needed)
+ingest_core.py      merge another instance's store into this one
 tests/              offline test suites; python3 -m unittest discover -s tests -t .
   test_llm_parser.py      the LLM parser (uses a local mock server)
   test_pronouns.py        grammar.py and the pronoun path
@@ -75,6 +77,7 @@ tests/              offline test suites; python3 -m unittest discover -s tests -
   test_consolidation.py   the sleep pass, LLM hypotheses and implications
   test_contradictions.py  rival values and disputed beliefs
   test_claims.py          how a claim lands on the belief it is about
+  test_ingest.py          merging another instance's core
 ```
 
 ## Using an LLM at the linguistic interfaces
@@ -187,6 +190,35 @@ python3 inspect_db.py demo_chloe.db --questions     # what CHLOE still wants to 
 python3 inspect_db.py demo_chloe.db --transcript Dan
 python3 inspect_db.py demo_chloe.db --all --json
 ```
+
+## Merging two instances
+
+Two instances that have talked to different people can be merged.
+`ingest_core.py` takes another store's people, turns, beliefs, evidence,
+implications, declared relations and open questions into this one, keeping
+every piece of provenance:
+
+```
+python3 ingest_core.py chloe_data.db other.db             # take other.db in
+python3 ingest_core.py chloe_data.db other.db --dry-run   # report what it would change
+python3 ingest_core.py chloe_data.db                      # list what has been taken in
+```
+
+- A belief lands on the one here that states the same thing, and where its
+  evidence changes, its confidence and status are worked out again here.
+- Who is who follows the sign-in rules. A name new here comes over with its
+  trust and secret word. A name held on both sides without a secret word is
+  one person, who keeps the trust held here. A name with a secret word on
+  either side comes over as `Name (unverified)`, and its claims about
+  itself stay behind.
+- Rival values that meet for the first time are kept side by side, and the
+  question of which holds is queued.
+- It is safe to repeat. Every turn has a fingerprint, so a later copy of the
+  same store brings over only what is new, and a store that has already
+  passed through a third instance is recognised.
+
+The source is only read. Stop the web server before ingesting into the
+store it serves.
 
 ## Try the scripted demo
 

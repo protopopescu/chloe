@@ -1,13 +1,5 @@
 """
-Person-relative pronoun handling.
-
-Ports `SwapPronoun()` and `AccordTheVerb()` from the 2000 C++ (cGrammar.hh).
-The original swapped first- and second-person pronouns just before CHLOE
-spoke, and agreed the copula with the result, so that a question about
-"I" came back as an answer about "you".
-
-The same job splits in two here, because beliefs are now stored rather
-than echoed:
+Pronouns, agreement, and when two phrasings are one belief.
 
     resolve_referents()  inbound. "I"/"me"/"my" become the speaker's name
         and "you"/"your" become Chloe's, so a belief is recorded about a
@@ -18,17 +10,11 @@ than echoed:
         renders as "you", Chloe's as "I", and the copula is agreed with
         whichever pronoun came out.
 
-A queued question stores no wording. It is rendered with clause() when it
-is asked, for whoever is being asked, so the same question reads "you"
-to one person and a name to another.
-
 Only first- and second-person singular is handled. "we"/"our" have no
 single referent to resolve to and are left alone.
 
-The module also defines when two phrasings are the same belief
-(identity()). Every lookup, merge and duplicate check uses it, so a
-statement meets the atom it corroborates at the moment it is made rather
-than only after a sleep.
+identity() defines when two phrasings are the same belief. Every lookup,
+merge and duplicate check uses it.
 """
 
 import re
@@ -102,7 +88,7 @@ def resolve_referents(utt, speaker: str):
 
 
 def swap_pronoun(word: str, speaker: str) -> str:
-    """cGrammar.hh SwapPronoun(): a stored name as the listener would say it."""
+    """A stored name as the listener would say it."""
     if not word or not speaker:
         return word
     low = word.strip().lower()
@@ -196,8 +182,7 @@ def third_person(relation: str) -> str:
 
 
 def accord_verb(verb: str, pronoun: str) -> str:
-    """cGrammar.hh AccordTheVerb(): agree a verb with the pronoun in front of
-    it. A copula takes that person's form and keeps its tense, and any other
+    """Agree a verb with the pronoun in front of it. A copula takes that person's form and keeps its tense, and any other
     verb loses its third-person -s. Anything that is not a first/second-person
     pronoun keeps the verb as stored, since a third-person subject may be
     plural ("cats are animals")."""
@@ -244,8 +229,8 @@ def capitalise(text: str) -> str:
 
 # ------------------------------------------------------------- identity
 
-# Forms of one relation, for identity only -- surface variants, not a claim
-# about their semantics.
+# Spellings counted as one relation when deciding identity. A lookup aid,
+# with no claim that the forms mean the same.
 RELATION_SYNONYMS = {"is": "is", "are": "is", "am": "is", "was": "is", "were": "is",
                      "means": "is", "has": "have"}
 
@@ -305,9 +290,8 @@ FUNCTION_WORDS = {
 
 
 def fold(word: str) -> str:
-    """Crude singular fold, enough to let 'cats' and 'a cat' meet. Nothing
-    here is linguistics; it is the smallest normalisation that stops a
-    grounding check refusing a reading over a plural."""
+    """Crude singular fold, enough to let 'cats' and 'a cat' meet in a
+    grounding check."""
     w = word.strip().lower()
     if w.endswith("'s"):
         w = w[:-2]
@@ -335,6 +319,6 @@ def ungrounded_words(text: str, vocab: set) -> list:
 
 def in_source_case(text: str, source: str) -> str:
     """Each word of `text` spelled as `source` spells it, where it does:
-    a reading keeps the person's own capitals ("Hector", not "hector")."""
+    a reading keeps the person's own capitals ("Hector")."""
     spelling = {w.lower(): w for w in _CONTENT_RE.findall(source or "")}
     return _CONTENT_RE.sub(lambda m: spelling.get(m.group(0).lower(), m.group(0)), text or "")

@@ -24,8 +24,8 @@ DEFAULT_TIMEOUT = float(os.getenv("VLLM_TIMEOUT", "30"))
 
 
 class LLMUnavailable(Exception):
-    """The server is not configured or could not be reached. Callers fall
-    back to the symbolic engine's own reply rather than fail the turn."""
+    """The server is not configured or could not be reached. Callers carry
+    on without the LLM."""
 
 
 def is_configured() -> bool:

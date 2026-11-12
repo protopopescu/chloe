@@ -1,28 +1,21 @@
 """
 Implication between beliefs: "Felix is a black cat" entails "Felix is a
-cat", "poking a bear is risky and dangerous" entails "poking a bear is
-dangerous".
+cat".
 
-Two such beliefs are not the same belief, so they are never merged into
-one: whichever wording survived, it would either credit the general
-belief's sources with the detail they never gave, or lose the detail. They
-stay separate atoms, linked, and the link does three things:
+The two stay separate atoms, since merging them would either credit the
+general belief's sources with a detail they never gave or lose the detail.
+A link between them does three things:
 
-  - they stop competing: neither is a rival value of the other
-    (questions.rivals);
-  - evidence flows the way implication runs -- support for the specific
+  - they stop competing as rival values (questions.rivals);
+  - evidence flows the way implication runs: support for the specific
     belief supports the general one, and a denial of the general one
     denies the specific one;
-  - the disputes recorded when the second arrived, back when nothing could
-    tell a compatible value from a rival, are voided and the trust they
-    cost is given back. Voided evidence stays in the record.
+  - disputes recorded between them when the second arrived are voided, and
+    the trust they cost is given back. Voided evidence stays in the record.
 
 A link is made during sleep when the words carry the implication ("a black
-cat" -> "a cat"), and otherwise only when a person, asked, says it holds
-("risky" -> "dangerous"): the LLM's reading of the words is a conjecture,
-and a conjecture waits for somebody to confirm it (consolidation.
-_link_implications, questions "implication"). This module is what a link
-means, used there and by every claim made afterwards.
+cat" -> "a cat"), and otherwise only when a person confirms it ("risky" ->
+"dangerous"; consolidation._link_implications, the "implication" question).
 """
 
 from typing import Dict, Optional

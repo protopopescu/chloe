@@ -1,13 +1,9 @@
 """
-Minimal natural-language front end.
+Pattern-based natural-language front end.
 
-Turns a line of text into a structured Utterance, and nothing more. The
-2000 code hardcoded its English patterns into the control flow
-(cGrammar.hh, cData.hh); they live in one place here.
-
-Deliberately not an LLM, so the prototype runs with no API key and no
-network. `parse(text) -> Utterance` is the linguistic input interface:
-llm_nlu.py implements the same signature over a language model, and
+Turns a line of text into a structured Utterance, and nothing more, with no
+API key and no network. `parse(text) -> Utterance` is the linguistic input
+interface: llm_nlu.py implements the same signature over the LLM, and
 nothing else in the package changes between the two.
 """
 
@@ -29,11 +25,10 @@ class UtteranceType(str, Enum):
 
 
 _SCOPE_SPLIT = re.compile(r"\bwhen\b|\bif\b", re.IGNORECASE)
-# Part of the parse() contract rather than of any one implementation: a
-# line longer than this is refused unread, by the patterns and by the LLM
-# parser alike. A single assertion in the forms CHLOE stores fits well
-# inside it, so the length itself is evidence the input is something else.
-# It also keeps the LLM from ever being handed a long block of text.
+# Part of the parse() contract, shared by both parsers: a line longer than
+# this is refused unread. A single assertion in the forms CHLOE stores fits
+# well inside it, and the limit keeps a long block of text from ever
+# reaching the LLM.
 MAX_INPUT_CHARS = int(os.getenv("CHLOE_MAX_INPUT_CHARS", "128"))
 
 _DETERMINERS = ("a", "an", "the")
@@ -54,9 +49,8 @@ _VOCATIVE_RE = re.compile(
 # statement ending in the name ("the robot is Chloe") is left alone.
 _TRAILING_VOCATIVE_RE = re.compile(r"\s*,\s*chloe\s*([!.?]*)\s*$", re.IGNORECASE)
 
-# Discourse markers and hedges. The belief is the proposition, not the
-# packaging -- but only stripped when something follows, so "I think" alone
-# or "no" alone is left to be classified on its own terms.
+# Discourse markers and hedges, stripped only when something follows them,
+# so "I think" or "no" alone is classified on its own terms.
 _LEADING_MARKER_RE = re.compile(
     r"^\s*(?:(?:no|yes|yeah|well|so|actually|honestly|right|ok(?:ay)?|but|and)\s*,\s*|"
     r"(?:i\s+(?:think|believe|reckon|guess)|you\s+know|to\s+be\s+fair|i\s+mean)\s+)+",
@@ -81,9 +75,8 @@ def _strip_markers(s: str) -> str:
     return stripped if stripped.strip() else s
 
 
-# Phatic openings and closings: not assertions, not failures to understand.
-# Deliberately narrow -- anything carrying a claim must fall through to the
-# patterns below, so this never swallows evidence.
+# Phatic openings and closings. Kept narrow, so anything carrying a claim
+# falls through to the patterns below.
 _SMALL_TALK_RE = re.compile(
     r"^\s*(?:"
     r"h(?:i|ello|ey|iya)|yo|greetings|good\s+(?:morning|afternoon|evening|day)|"
@@ -153,9 +146,8 @@ COMMANDS = {
 }
 
 
-# A subject names the thing a belief is about. One that opens with a
-# question word ("how to know", "why it rains") is a question, not a thing,
-# and nothing can be believed or asked about it.
+# A subject that opens with a question word ("how to know", "why it rains")
+# names nothing, and nothing can be believed or asked about it.
 _INTERROGATIVES = {"what", "who", "whom", "whose", "which", "how", "why", "where", "when"}
 
 
@@ -199,7 +191,7 @@ def _parse_patterns(text: str) -> Utterance:
 
     # wh- question: "what is X", "who is X", "what does X mean".
     # Matched against the original-case text so the subject is echoed back
-    # as the person wrote it ("who is Felix?", not "who is felix?").
+    # as the person wrote it.
     m = re.match(r"^(what|who)\s+(is|are|am|means)\s+(.+)$", t, re.IGNORECASE)
     if m and is_question:
         subject = _strip_punct(m.group(3))
@@ -212,7 +204,7 @@ def _parse_patterns(text: str) -> Utterance:
         rest, scope = _split_scope(m.group(2))
         # Naive split, object-last: "the sky blue" -> "the sky" / "blue".
         # A determiner immediately before the final word belongs to the
-        # object, not the subject: "Felix a cat" -> "Felix" / "a cat".
+        # object: "Felix a cat" -> "Felix" / "a cat".
         tokens = rest.split()
         if len(tokens) >= 2:
             cut = -2 if len(tokens) >= 3 and tokens[-2].lower() in _DETERMINERS else -1

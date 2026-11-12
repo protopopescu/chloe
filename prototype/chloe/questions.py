@@ -3,10 +3,9 @@ Open questions: what CHLOE asks, of whom, and when a question has stopped
 being worth asking.
 
 A question is stored as a reason and the thing it is about -- an atom, a
-pair of atoms, or an unknown term -- never as a finished sentence. It is checked and worded
-at the moment it is asked, because by then the belief may have been
-settled, merged or retired, and because the wording depends on who is
-being asked: "you once told me" is true of one person and false of the
+pair of atoms, or an unknown term -- and is checked and worded at the
+moment it is asked, because by then the belief may have been settled,
+merged or retired, and because the wording depends on who is being asked: "you once told me" is true of one person and false of the
 next, and "Bob" is "you" to Bob.
 
 Each reason carries three things: the kind of answer it takes, why CHLOE

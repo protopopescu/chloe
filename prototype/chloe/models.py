@@ -4,9 +4,6 @@ Core data model.
 Everything CHLOE believes is stored as an Atom: a subject-relation-object
 triple, plus the context that makes it meaningful (scope), who said it and
 when (provenance), and how confident CHLOE is that it is true.
-
-Knowledge is never an opaque number: every belief is inspectable, and
-facts carry explicit scope rather than pretending to be universal.
 """
 
 from dataclasses import dataclass, field
@@ -42,12 +39,8 @@ class AtomStatus(str, Enum):
 
 @dataclass
 class Person:
-    """An interlocutor. Trust is domain-specific (domain -> score) rather
-    than one global reliability number.
-
-    secret_hash/secret_salt back the optional secret-word identity check.
-    Without it, anyone typing a known name would inherit that person's
-    accumulated trust and belief history."""
+    """An interlocutor. Trust is held per domain (domain -> score).
+    secret_hash/secret_salt back the optional secret-word identity check."""
 
     id: int
     name: str
@@ -113,18 +106,14 @@ class Provenance:
     # between the two carries across (entailment.py). None for evidence
     # given about this atom directly.
     via_atom_id: Optional[int] = None
-    # Kept and ignored, never deleted: evidence later found to rest on a
-    # mistake -- a dispute recorded against a value that turned out to be
-    # compatible -- stays in the record and out of the confidence.
+    # Evidence found to rest on a mistake -- a dispute against a value later
+    # shown to be compatible -- stays in the record and out of the confidence.
     void: bool = False
 
 
 @dataclass
 class Atom:
     """A single idea, e.g. 'the sky is blue'.
-
-    subject / relation / object generalise the original 'X is Y' pattern:
-    the relation is not always "is".
 
     scope carries the condition under which the statement holds -- "the sky
     is blue" is only true relative to illumination, atmosphere, observer.
@@ -174,6 +163,11 @@ class Interaction:
     role: str  # "source" or "chloe"
     text: str
     at: str = field(default_factory=now_iso)
+    # Set on a turn that came from another instance's store (ingest.py):
+    # its fingerprint there, so the same turn is never taken in twice, and
+    # the ingest that brought it. None on a turn spoken here.
+    origin: Optional[str] = None
+    ingest_id: Optional[int] = None
 
 
 @dataclass

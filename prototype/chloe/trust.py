@@ -1,16 +1,9 @@
 """
 Trust and confidence.
 
-Trust is domain-specific rather than one global score: each Person carries
-a score per domain (models.Person.trust), nudged up on corroboration and
-down on contradiction.
-
-Atom confidence is a trust-weighted vote over the provenance attached to
-it, not a source count, so one trusted source can outweigh several
-unreliable ones and a single trusted contradiction can flip an atom's
-status. The vote is damped by the total weight of evidence behind it, so
-confidence approaches its extremes only as trusted evidence accumulates,
-not on unanimity alone.
+Each Person carries a trust score per domain (models.Person.trust), nudged
+up on corroboration and down on contradiction. An atom's confidence is a
+trust-weighted vote over its evidence, damped by the total weight behind it.
 """
 
 from .models import Atom, AtomStatus, Person, Provenance

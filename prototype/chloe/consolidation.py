@@ -3,22 +3,20 @@ Offline consolidation -- "sleep" / "dreaming".
 
 During inactivity CHLOE cross-matches existing ideas, derives possible new
 ones, detects inconsistencies, compresses redundant knowledge, and prepares
-the questions whose answers would tell it most. Conversation gathers
-evidence; sleep produces understanding.
+the questions whose answers would tell it most.
 
 This pass runs over everything currently in the KnowledgeStore. It is
 triggered by the "sleep" command in dialogue.py, and on a schedule in the
-web deployment -- a distinct offline phase, without a process restart.
+web deployment.
 
 New ideas come from two passes that do different jobs.
 _generate_hypotheses derives what *follows*, using only relation properties
 explicitly declared via store.declare_relation(); transitivity and symmetry
 are never inferred from the wording of a relation. _generate_hypotheses_llm
-proposes what *might* hold, by asking the language model to combine what
-CHLOE has been told -- "Felix is a cat" and "Felix is black" giving "Felix
-is a black cat", which no relation algebra reaches. The second pass
-conjectures, it does not derive, and the distinction is kept: its output is
-a HYPOTHESIS like any other, put to a person before it can become a belief.
+proposes what *might* hold, by asking the LLM to combine what CHLOE has
+been told -- "Felix is a cat" and "Felix is black" giving "Felix is a black
+cat", which no relation algebra reaches. Its output is a HYPOTHESIS like
+any other, put to a person before it can become a belief.
 
 Privacy: the LLM pass sends the stored triples to the configured server.
 With VLLM_BASE_URL unset it does not run at all and the rest of sleep is
@@ -32,8 +30,8 @@ from typing import Dict, List, Optional, Tuple
 
 from . import entailment, grammar, llm_client, questions, trust as trust_mod
 from .models import Atom, AtomStatus, Person
-# Reused rather than re-implemented: the reply contract for a JSON-returning
-# model is the same one the input parser enforces -- validate, never repair.
+# The reply contract for a JSON-returning model is the input parser's:
+# validate, never repair.
 from .llm_nlu import BadParse, _clean_field, _extract_json
 
 MAX_VERIFICATION_QUESTIONS_PER_SLEEP = 3
@@ -43,16 +41,15 @@ MAX_VERIFICATION_QUESTIONS_PER_SLEEP = 3
 HYPOTHESIS_DAMPING = 0.8
 
 # What one sleep may add to the queue. The limit is the patience of whoever
-# wakes up to the questions, not the model's throughput.
+# wakes up to the questions.
 MAX_LLM_HYPOTHESES_PER_SLEEP = int(os.getenv("CHLOE_MAX_LLM_HYPOTHESES", "5"))
 
 # How many atoms are shown to the model, newest first, so a large store
 # still makes a bounded request.
 MAX_LLM_CONTEXT_ATOMS = int(os.getenv("CHLOE_HYPOTHESIS_CONTEXT_ATOMS", "60"))
 
-# The model's own confidence is a filter, not evidence: below this the
-# candidate is dropped, above it the number plays no part in the belief
-# maths. Same separation as Provenance.parse_confidence.
+# The model's own confidence is only a filter: below this the candidate is
+# dropped, above it the number plays no part in the belief maths. Same separation as Provenance.parse_confidence.
 MIN_LLM_HYPOTHESIS_CONFIDENCE = float(os.getenv("CHLOE_HYPOTHESIS_MIN_CONFIDENCE", "0.6"))
 
 
@@ -145,7 +142,9 @@ def _merge_duplicates(store, report: SleepReport, people_by_id: dict) -> None:
     become one. The best-attested phrasing is kept as the wording -- the
     one the most people have given evidence on, the earliest on a tie --
     and takes every piece of evidence and every open question of the
-    others, then has its confidence and status worked out again."""
+    others, then has its confidence and status worked out again. One act
+    of evidence that sits on two of them -- the same person, interaction
+    and verdict -- counts once on the merged belief."""
     groups: Dict[tuple, List[Atom]] = {}
     for atom in store.all_atoms():
         groups.setdefault(atom.identity(), []).append(atom)
@@ -157,6 +156,8 @@ def _merge_duplicates(store, report: SleepReport, people_by_id: dict) -> None:
             if atom is keeper:
                 continue
             for prov in atom.provenance:
+                if store.has_provenance(prov, atom_id=keeper.id):
+                    continue
                 store.add_provenance(keeper.id, prov)
                 keeper.provenance.append(prov)
             store.repoint_atom(atom.id, keeper.id)
@@ -217,9 +218,8 @@ def _link_implications(store, report: SleepReport) -> None:
     general value uses only words of the specific one -- the two are linked
     now. Where it rests on the model's knowledge of the world ("risky" ->
     "dangerous", "a poodle" -> "a dog"), it becomes a question, and a
-    person's yes makes the link: the model's knowledge enters as a
-    conjecture for somebody to confirm, never as a settlement. With the
-    grounding switch off, every proposal is linked outright."""
+    person's yes makes the link. With the grounding switch off, every
+    proposal is linked outright."""
     if not llm_client.is_configured():
         return
     pairs = _implication_candidates(store)
@@ -323,18 +323,13 @@ def _generate_hypotheses(store, report: SleepReport, people_by_id: dict) -> None
 # --------------------------------------------------------- LLM hypotheses
 
 def _generate_hypotheses_llm(store, report: SleepReport) -> None:
-    """Ask the language model to combine what CHLOE has been told.
-
-    The pass above derives what follows from declared relation properties;
-    this one proposes what those properties cannot reach -- two things said
+    """Ask the LLM to combine what CHLOE has been told: two things said
     about the same subject, a scope that carries across, a name that turns
-    out to be a description. Both end in the same place, a HYPOTHESIS atom
-    and a queued question, because an idea nobody has confirmed is not a
-    belief however it was arrived at.
+    out to be a description. Like _generate_hypotheses, it ends in a
+    HYPOTHESIS atom and a queued question.
 
-    Only atoms someone has actually stated are shown: a conjecture built on
-    a conjecture would compound an error nobody has yet had the chance to
-    correct. A broken exchange leaves the pass with nothing and the rest of
+    Only atoms someone has stated are shown, so no conjecture is built on
+    another. A broken exchange leaves the pass with nothing and the rest of
     sleep unaffected.
     """
     if not llm_client.is_configured():
@@ -457,8 +452,7 @@ Answer:
 
 
 # An atom is one triple with one scope, so a proposal naming two things at
-# once is not a hypothesis this representation can hold -- it is two, and
-# both are usually on file already.
+# once is two proposals, and both are usually on file already.
 _COMPOUND_RE = re.compile(r"[,;]|\s(?:and|or|but)\s", re.IGNORECASE)
 
 # Conditions live in the scope field. One inside the object would be stored
@@ -486,8 +480,8 @@ def _atom_listing(atoms: List[Atom]) -> str:
 def _validated_hypothesis(cand, by_id: Dict[int, Atom],
                           existing: set) -> Tuple[Optional[Atom], Optional[str]]:
     """One candidate, checked against the contract. Returns the atom to save,
-    or None and the reason it was refused. Nothing is patched up: a proposal
-    that fails a check is dropped, not corrected into something acceptable."""
+    or None and the reason it was refused. A proposal that fails a check is
+    dropped, never patched up."""
     if not isinstance(cand, dict):
         return None, "reply contained something that is not a proposal"
 
@@ -524,7 +518,7 @@ def _validated_hypothesis(cand, by_id: Dict[int, Atom],
 
     # A proposal inherits the condition of the facts it rests on, and cannot
     # span two: statements holding under different conditions have nothing to
-    # combine, which is why they are separate atoms in the first place.
+    # combine.
     scopes = {a.scope.strip() for a in cited if a.scope.strip()}
     if len(scopes) > 1:
         return None, (f"'{label}' combines facts holding under different conditions "

@@ -103,9 +103,8 @@ class RejectionTests(unittest.TestCase):
                  "I'll double check: Claire is an artist.")
 
     def test_a_reply_may_not_turn_the_core_belief_around(self):
-        # observed live: the model kept the core's sentence and flipped its
-        # polarity, so the visitor was told Chloe would double-check the
-        # opposite of the atom she holds
+        # the core's sentence kept and its polarity flipped: the reply would
+        # double-check the opposite of the atom CHLOE holds
         self.assertIn("polarity", self._reason(
             "Okay -- that conflicts with what I believed. "
             "I'll double check: Claire is not an artist.",
@@ -126,7 +125,7 @@ class RejectionTests(unittest.TestCase):
 
     def test_a_denial_may_name_the_atom_the_core_named(self):
         # both are the same proposition in opposite polarity, so saying it
-        # plainly is phrasing, not parroting
+        # plainly is phrasing
         self.assertIsNone(self._reason(
             "You say Claire is not an artist, but I had Claire is an artist "
             "-- I'll double check.",
@@ -154,7 +153,7 @@ class RejectionTests(unittest.TestCase):
         self.assertIsNone(self._reason("Yesterday you said otherwise about Claire.", message="yes"))
 
     def test_echo_needs_a_word_boundary(self):
-        # the reply merely starts with a longer word, not a repetition
+        # the reply only starts with a longer word
         self.assertIsNone(self._reason("Greenhouses are warm indeed, and Claire comes first.",
                                        message="greenhouse"))
 
@@ -166,11 +165,10 @@ class RejectionTests(unittest.TestCase):
 class StanceTests(unittest.TestCase):
     """The core's yes/no answer must survive being worded.
 
-    The live case: asked "Is Hector an animal?" with only "Hector is a dog"
-    on file, the engine answers no. A model that knows dogs are animals
-    answered yes, and every other check passed it -- "animal" is not a name
-    or a number, and the polarity check looks for the person's words inside
-    the core's reply, which are not there.
+    Asked "Is Hector an animal?" with only "Hector is a dog" on file, the
+    engine answers no. A model that knows dogs are animals may answer yes,
+    and no other check catches it: "animal" is no name or number, and the
+    person's words are not in the core's reply.
     """
 
     MESSAGE = "Is Hector an animal?"
@@ -183,8 +181,7 @@ class StanceTests(unittest.TestCase):
             self.MESSAGE, self.DENIED, stance=Stance.DENY))
 
     def test_the_other_checks_still_miss_it(self):
-        # Without the stance, nothing else catches it -- which is why this
-        # guard exists rather than a wider denylist.
+        # Without the stance, nothing else catches it.
         self.assertIsNone(persona.rejection_reason(
             "Yes, Hector is an animal, specifically a dog.",
             self.MESSAGE, self.DENIED))

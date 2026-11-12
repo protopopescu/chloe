@@ -1,7 +1,7 @@
 """
 The conversational loop.
 
-The core cycle, as far as a single-session prototype reasonably goes:
+The core cycle:
 
     1. Converse.                           -> turn()
     2. Acquire candidate knowledge.        -> _record()
@@ -59,8 +59,8 @@ def _reply_word(text: str) -> Optional[str]:
 
 
 # Interaction roles. ROLE_EVIDENCE marks the row a Provenance record points
-# at: the canonical form of a belief at the moment it was admitted, not a
-# turn anybody spoke. Transcripts show SOURCE and CHLOE only.
+# at: the canonical form of a belief at the moment it was admitted.
+# Transcripts show SOURCE and CHLOE only.
 ROLE_SOURCE = "source"
 ROLE_CHLOE = "chloe"
 ROLE_EVIDENCE = "evidence"
@@ -246,8 +246,8 @@ class ChloeEngine:
             return self._handle_secret_verify(text)
 
         assert self.person is not None, "call greet() first"
-        # Other sessions, and sleep, change people's trust in the store; the
-        # turn works from the store's copy, not one read at greeting.
+        # Other sessions, and sleep, change people's trust in the store, so
+        # the turn works from the store's copy.
         self.person = self.store.person_by_id(self.person.id) or self.person
         self._log(ROLE_SOURCE, text)
         reply = self._respond(text)
@@ -269,7 +269,7 @@ class ChloeEngine:
                 self._questions_declined = True
                 return "Of course -- I'll keep them to myself."
             # Anything else: the offer steps aside, and the line is taken on
-            # its merits rather than swallowed by an offer it ignored.
+            # its merits.
             self._questions_declined = True
 
         elif state == QuestionState.AWAITING_ANSWER:
@@ -287,7 +287,7 @@ class ChloeEngine:
 
         elif word in ("yes", "no"):
             # A yes or no with nothing on the table answers nothing, and is
-            # an acknowledgement rather than testimony.
+            # taken as an acknowledgement.
             return self._small_talk_reply(Utterance(raw=text, type=UtteranceType.SMALL_TALK))
 
         utt = grammar.resolve_referents(parse(text), self.person.name)
@@ -297,9 +297,9 @@ class ChloeEngine:
             # The line was not a reply word, and did not itself put anything
             # new on the table ("ask more", "sleep"). If it speaks to the question --
             # a statement or denial about the same thing -- it was an answer
-            # in the person's own words, already recorded above; the question
+            # in the person's own words, already recorded above. The question
             # closes and the next one follows. Anything else is a change of
-            # subject, and she stops asking.
+            # subject, and CHLOE stops asking.
             if questions.answered_by(self.store, q, utt):
                 self.store.mark_question_answered(q["id"])
                 reply = self._and_next(reply)
@@ -323,9 +323,8 @@ class ChloeEngine:
         return self._unknown_reply(utt)
 
     def _small_talk_reply(self, utt: Utterance) -> str:
-        """A pleasantry is not evidence, and not a failure to understand
-        either. She answers it and writes nothing: the language layer may
-        converse freely precisely because nothing it says reaches the store.
+        """A pleasantry is answered and nothing is written: the language
+        layer may converse freely because nothing it says reaches the store.
         """
         openers = ("hello", "hi", "hey", "greetings", "good morning",
                    "good afternoon", "good evening", "good day")
@@ -364,11 +363,8 @@ class ChloeEngine:
 
     # -------------------------------------------------------- sleep / wake
     def sleep(self) -> str:
-        """Consolidate, then wake with whatever that turned up.
-
-        Waking is where the questions consolidation produced get put to
-        somebody, which is the point of having slept.
-        """
+        """Consolidate, then wake and offer the questions consolidation
+        produced."""
         from . import consolidation
         summary = consolidation.sleep(self.store).summary()
         offer = self._offer()
@@ -388,8 +384,7 @@ class ChloeEngine:
         """Ask permission to put CHLOE's open questions to this person, if
         there is anything worth asking them. A fresh sleep earns a fresh
         ask, so an earlier 'stop' is not held against this offer; after it,
-        consent is honoured for the rest of the session. The detour is a
-        guest in the conversation, not an interrogation."""
+        consent is honoured for the rest of the session."""
         self._questions_declined = False
         self._end_questions()
         if questions.next_for(self.store, self.person) is None:
@@ -441,8 +436,8 @@ class ChloeEngine:
 
     def _answer_implication(self, q: dict, holds: bool) -> str:
         """Whether one belief follows from another is a question about what
-        the words mean, not evidence about the world: it links the two, or
-        keeps them apart, and records who said so."""
+        the words mean. The answer links the two or keeps them apart, and
+        records who said so."""
         specific = self.store.atom_by_id(q.get("related_atom_id"))
         general = self.store.atom_by_id(q.get("other_atom_id"))
         self.store.mark_question_answered(q["id"])
@@ -491,7 +486,7 @@ class ChloeEngine:
         return bool(self.person) and grammar.same_referent(subject, self.person.name)
 
     def _vacuous_reply(self, utt: Utterance) -> str:
-        """Subject and object turned out to denote the same thing, so the
+        """Subject and object denote the same thing, so the
         statement carries no information and is not stored. Pronoun
         resolution makes this common: "I am Dan", said by Dan, resolves to
         "Dan is Dan"."""
@@ -610,9 +605,9 @@ class ChloeEngine:
         """A claim nothing on file speaks to directly.
 
         If a different value stands on the same subject, relation and scope,
-        the claim is also evidence against it -- this prototype cannot tell a
-        rival value from a compatible one -- and the question of which holds
-        is queued. The new value is kept as a belief of its own either way,
+        the claim is also evidence against it, since a rival value cannot yet
+        be told from a compatible one (sleep may link the two, entailment.py),
+        and the question of which holds is queued. The new value is kept as a belief of its own either way,
         so what was said survives that judgement.
         """
         atom = Atom(id=None, subject=subject, relation=relation, object=obj, scope=scope,
@@ -639,10 +634,9 @@ class ChloeEngine:
     def _handle_yn_question(self, utt: Utterance) -> str:
         """Answer from the store alone, and record which way the answer went.
 
-        The stance is what the output-side guard needs: the reply's wording
-        is the language layer's business, but whether it comes back as a yes,
-        a no, or neither is the core's, and a naturalisation that turns one
-        into another has changed the outcome rather than phrased it.
+        The stance is what the output-side guard checks: a naturalisation
+        that turns a yes, a no or neither into another has changed the
+        outcome.
         """
         if grammar.same_referent(utt.subject, utt.obj):
             self.last_stance = Stance.AFFIRM
@@ -676,9 +670,9 @@ class ChloeEngine:
                       if a.status != AtomStatus.CONTRADICTED]
         if not candidates:
             questions.queue(self.store, "unknown_term", term=utt.subject)
-            # A name is not a belief and is held on the Person, not as an
-            # atom -- but answering a flat "I don't know" immediately after
-            # greeting someone by that name reads as a contradiction.
+            # A name is held on the Person and has no atom, but a flat "I don't
+            # know" right after greeting someone by that name reads as a
+            # contradiction.
             if self._is_speaker(utt.subject):
                 known = f"Only that you're {self.person.name}"
             elif grammar.same_referent(utt.subject, grammar.CHLOE_NAME):
