@@ -111,6 +111,23 @@ class ConsolidationTestCase(unittest.TestCase):
         self.assertTrue(all(q["related_atom_id"] == atoms[0].id
                             for q in self.store.pending_questions()))
 
+    def test_every_request_of_the_sleep_asks_for_a_single_json_object(self):
+        # Each pass's contract is one JSON object; decoding is constrained to
+        # that, so a reply cannot carry a stray character after it.
+        calls = []
+
+        def chat(messages, **kwargs):
+            calls.append(kwargs)
+            return json.dumps({"implications": [], "hypotheses": [], "same": []})
+        os.environ["VLLM_BASE_URL"] = "http://stub/v1"
+        llm_client.chat = chat
+        self.felix()
+        self.atom("Felix", "is", "a black cat")
+        self.atom("Fluffy", "is", "a cat")
+        consolidation.sleep(self.store)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(all(c.get("json_object") for c in calls), calls)
+
     # -------------------------------------------------------- implication
     def _said(self, name, line):
         e = ChloeEngine(self.store)

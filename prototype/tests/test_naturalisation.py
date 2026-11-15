@@ -87,6 +87,24 @@ class RejectionTests(unittest.TestCase):
             "You're Sam -- and who am I talking to beyond that?",
             message="Who am I?", gt="Only that you're Sam -- who are you?"))
 
+    def test_any_predicate_moved_to_the_other_party_is_rejected(self):
+        # Not only the copula: what the core said of itself came back said
+        # of the person.
+        self.assertIn("swapped the speakers", self._reason(
+            "That confirms for me that you live in Glasgow, as I believed before.",
+            message="Yes",
+            gt="Good, that matches what I already believed: I live in Glasgow."))
+
+    def test_a_possessive_moved_to_the_other_party_is_rejected(self):
+        self.assertIn("swapped the speakers", self._reason(
+            "Felix is my cat.", message="Who is Felix?", gt="Felix is your cat."))
+
+    def test_rewording_with_each_party_kept_is_allowed(self):
+        self.assertIsNone(self._reason(
+            "Good -- that's what I already believed: I live in Glasgow.",
+            message="Yes",
+            gt="Good, that matches what I already believed: I live in Glasgow."))
+
     def test_echoing_the_person_is_rejected(self):
         reply = ("Claire is not an artist. Hmm, that contradicts what I was told "
                  "before. I'll flag it and ask around.")

@@ -231,7 +231,7 @@ def _link_implications(store, report: SleepReport) -> None:
         payload = _extract_json(llm_client.chat(
             [{"role": "system", "content": _IMPLICATION_SYSTEM_PROMPT},
              {"role": "user", "content": "Pairs:\n" + listing}],
-            temperature=0.0, max_tokens=400,
+            temperature=0.0, max_tokens=400, json_object=True,
         ))
     except (llm_client.LLMUnavailable, BadParse) as e:
         report.details.append(f"  no implications from the model: {e}")
@@ -353,6 +353,7 @@ def _generate_hypotheses_llm(store, report: SleepReport) -> None:
             ],
             temperature=0.0,  # consolidation should not vary run to run
             max_tokens=600,
+            json_object=True,
         ))
     except (llm_client.LLMUnavailable, BadParse) as e:
         report.details.append(f"  no hypotheses from the model: {e}")
@@ -584,7 +585,7 @@ def _propose_coreference(store, report: SleepReport) -> None:
         payload = _extract_json(llm_client.chat(
             [{"role": "system", "content": _COREFERENCE_SYSTEM_PROMPT},
              {"role": "user", "content": "Pairs:\n" + listing}],
-            temperature=0.0, max_tokens=400,
+            temperature=0.0, max_tokens=400, json_object=True,
         ))
     except (llm_client.LLMUnavailable, BadParse) as e:
         report.details.append(f"  no coreference from the model: {e}")

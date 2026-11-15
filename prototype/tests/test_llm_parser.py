@@ -20,13 +20,13 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # The mock's reply for the next request, and a counter of requests seen.
-_MOCK = {"reply": None, "hits": 0, "status": 200}
+_MOCK = {"reply": None, "hits": 0, "status": 200, "request": None}
 
 
 class _MockVLLMHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         _MOCK["hits"] += 1
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        _MOCK["request"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         body = json.dumps({"choices": [{"message": {"content": _MOCK["reply"]}}]})
         self.send_response(_MOCK["status"])
         self.send_header("Content-Type", "application/json")
@@ -149,6 +149,13 @@ class LLMParserTests(unittest.TestCase):
         utt = llm_nlu.parse("the sky is blue")
         self.assertEqual(utt.type, UtteranceType.STATEMENT)
         self.assertEqual(utt.extra["parser"], "patterns")
+
+    def test_the_request_asks_for_a_single_json_object(self):
+        # Decoding is constrained to the contract's shape, so a reply cannot
+        # carry anything after the object ('{...}"' was seen live).
+        _MOCK["reply"] = _payload(subject="grass", relation="is", object="green")
+        llm_nlu.parse("grass is green")
+        self.assertEqual(_MOCK["request"].get("response_format"), {"type": "json_object"})
 
     def test_code_fences_tolerated(self):
         _MOCK["reply"] = "```json\n" + _payload(subject="grass", relation="is", object="green") + "\n```"

@@ -151,9 +151,21 @@ def _polarities(text: str, atom_words: list) -> set:
     return found
 
 
-# "you are X" / "I am X" -- the same predicate attached to the other party.
-_YOU_ARE_RE = re.compile(r"\byou(?:'re|’re| are)\s+(?:an?|the)?\s*([\w'’-]+)", re.IGNORECASE)
-_I_AM_RE = re.compile(r"\bi(?:'m|’m| am)\s+(?:an?|the)?\s*([\w'’-]+)", re.IGNORECASE)
+# Who is who. Each party to the conversation is named by a subject pronoun
+# (contracted or not) or a possessive, and what follows it, past any
+# auxiliaries, articles and adverbs, is what is being said of that party:
+# "you're Sam", "I already believed", "I live in Glasgow", "your cat".
+_SELF_WORDS = {"i", "i'm", "i've", "i'll", "i'd", "my"}
+_OTHER_WORDS = {"you", "you're", "you've", "you'll", "you'd", "your"}
+_PASSED_OVER = {
+    "am", "are", "is", "was", "were", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had",
+    "will", "would", "can", "could", "shall", "should", "may", "might", "must",
+    "not", "never", "don't", "didn't", "can't", "won't", "haven't", "wasn't", "aren't",
+    "a", "an", "the", "some", "any",
+    "also", "still", "already", "just", "really", "only", "now", "then", "too",
+}
+_TOKEN_OR_MARK_RE = re.compile(r"[\w'-]+|[^\w\s]")
 
 
 def system_prompt(ground_truth_reply: str = "") -> str:
@@ -213,8 +225,24 @@ def _referents(text: str, strict: bool = True, breaks: str = _SENTENCE_BREAK) ->
     return found
 
 
-def _predicate(pattern, text: str) -> set:
-    return {m.group(1).lower() for m in pattern.finditer(text)}
+def _said_of(text: str) -> tuple:
+    """What `text` says of each party: (of the speaker, of the listener),
+    each a set of the words that follow a pronoun naming that party. A
+    punctuation mark ends the search, so "thank you. Got it" attaches
+    nothing to "you"."""
+    tokens = _TOKEN_OR_MARK_RE.findall(text.lower().replace("’", "'"))
+    self_, other = set(), set()
+    for i, tok in enumerate(tokens):
+        party = self_ if tok in _SELF_WORDS else other if tok in _OTHER_WORDS else None
+        if party is None:
+            continue
+        for nxt in tokens[i + 1:]:
+            if not (nxt[0].isalnum() or nxt[0] == "_"):
+                break
+            if nxt not in _PASSED_OVER:
+                party.add(nxt)
+                break
+    return self_, other
 
 
 def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
@@ -255,11 +283,12 @@ def rejection_reason(reply: str, user_message: str, ground_truth_reply: str,
             and re.search(rf"\b{re.escape(echo)}\b", low)):
         return "echoed the person's own words back at them"
 
-    # Who is who. "you're Sam" must not come back as "I'm Sam".
-    said_of_person = _predicate(_YOU_ARE_RE, ground_truth_reply)
-    said_of_self = _predicate(_I_AM_RE, ground_truth_reply)
-    inverted = (_predicate(_I_AM_RE, text) & said_of_person - said_of_self) \
-        | (_predicate(_YOU_ARE_RE, text) & said_of_self - said_of_person)
+    # Who is who. What the core said of one party must not come back said
+    # of the other: "you're Sam" as "I'm Sam", "I live in Glasgow" as "you
+    # live in Glasgow", "your cat" as "my cat".
+    core_self, core_other = _said_of(ground_truth_reply)
+    shown_self, shown_other = _said_of(text)
+    inverted = (shown_self & core_other - core_self) | (shown_other & core_self - core_other)
     if inverted:
         return f"swapped the speakers ({sorted(inverted)[0]!r})"
 

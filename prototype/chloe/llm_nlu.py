@@ -250,6 +250,7 @@ def _ask_llm(text: str) -> dict:
         ],
         temperature=0.0,  # parsing is classification, so deterministic
         max_tokens=200,
+        json_object=True,
     )
     return _extract_json(reply)
 

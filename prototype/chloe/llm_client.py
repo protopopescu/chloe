@@ -33,10 +33,15 @@ def is_configured() -> bool:
 
 
 def chat(messages: list, *, temperature: float = 0.7, max_tokens: int = 400,
-         model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT) -> str:
+         model: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
+         json_object: bool = False) -> str:
     """Send a chat-completions request, return the reply text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": str}
+    json_object: constrain decoding to a single JSON object
+        (response_format), for callers whose contract is one. The server
+        then cannot emit prose, fences or stray characters around it, and
+        the reply still goes through the caller's own validation.
     Raises LLMUnavailable on any configuration or network/HTTP problem.
     """
     base_url = os.getenv("VLLM_BASE_URL")
@@ -53,6 +58,8 @@ def chat(messages: list, *, temperature: float = 0.7, max_tokens: int = 400,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if json_object:
+        payload["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
